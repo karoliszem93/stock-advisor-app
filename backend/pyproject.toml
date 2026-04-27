@@ -1,0 +1,71 @@
+[project]
+name = "stock-advisor"
+version = "0.1.0"
+description = "Localhost stock investment advisor — daily Buy/Avoid/Sell-short suggestions"
+readme = "../README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Karolis Žemaitis", email = "karolis.zem93@gmail.com" }]
+
+dependencies = [
+    # web
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+
+    # db
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+
+    # scheduler
+    "apscheduler>=3.10",
+    "tzdata>=2024.2",
+
+    # data + analysis (Phase 1+2 will pull these in)
+    "httpx>=0.27",
+    "yfinance>=0.2.50",
+    "pandas>=2.2",
+    "numpy>=2.1",
+    "ta>=0.11.0",            # technical indicators
+    "python-dateutil>=2.9",
+
+    # llm (Phase 3 — Ollama via http)
+    "ollama>=0.4",
+
+    # git + http
+    "gitpython>=3.1",
+
+    # misc
+    "python-dotenv>=1.0",
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["E501"]  # let formatter handle line length
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

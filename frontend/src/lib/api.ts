@@ -38,6 +38,23 @@ export interface WatchlistItem {
   note: string | null;
 }
 
+export interface ProviderStatus {
+  name: string;
+  description: string;
+  available: boolean;
+  key_setting: string | null;
+  key_present: boolean;
+  key_source_url: string | null;
+  rate_limit: {
+    capacity: number;
+    window_seconds: number;
+    used: number;
+    remaining: number;
+    resets_at: string | null;
+  };
+  error?: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -61,6 +78,7 @@ export const api = {
       request<{ removed: string }>(`/api/watchlist/${ticker}`, { method: "DELETE" }),
   },
   validations: () => request<unknown[]>("/api/validations/"),
+  providers: () => request<ProviderStatus[]>("/api/providers/"),
   triggerDailyRun: () =>
     request<{ triggered: string }>("/api/run/daily", { method: "POST" }),
 };

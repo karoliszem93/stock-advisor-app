@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # ----- llm -----
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:14b-instruct"
+    ollama_model: str = "qwen2.5:14b"
     ollama_timeout_seconds: int = 180
 
     # ----- providers -----

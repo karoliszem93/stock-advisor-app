@@ -180,6 +180,24 @@ def check_simfin(env: dict) -> tuple[bool, str]:
     return False, f"status={status} body={raw[:160]}"
 
 
+def check_ollama(env: dict) -> tuple[bool, str]:
+    """Verify the Ollama daemon is running and the configured model is installed."""
+    host = env.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    want_model = env.get("OLLAMA_MODEL", "qwen2.5:14b")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as resp:
+            blob = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, f"daemon unreachable at {host}: {e!r}"
+
+    models = [m.get("name") for m in (blob.get("models") or []) if m.get("name")]
+    if want_model in models:
+        return True, f"OK (daemon up, {want_model} installed; {len(models)} models total)"
+    if any(m.split(":")[0] == want_model.split(":")[0] for m in models):
+        return False, f"daemon up but {want_model} missing; have {models}"
+    return False, f"daemon up but no model installed; pull with: ollama pull {want_model}"
+
+
 def check_reddit(env: dict) -> tuple[bool, str]:
     cid = env.get("REDDIT_CLIENT_ID")
     csec = env.get("REDDIT_CLIENT_SECRET")
@@ -225,6 +243,7 @@ def main() -> int:
         ("newsapi",      lambda: check_newsapi(env)),
         ("simfin",       lambda: check_simfin(env)),
         ("reddit",       lambda: check_reddit(env)),
+        ("ollama",       lambda: check_ollama(env)),
     ]
 
     failures: list[str] = []

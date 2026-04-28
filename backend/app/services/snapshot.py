@@ -90,17 +90,9 @@ def build_ticker_context(
     fh_news = _safe(errors, "finnhub.news", lambda: get_provider("finnhub").get_company_news(ticker, days=14))
     if fh_news:
         news.extend(fh_news)
-    # Finnhub aggregate sentiment, used directly by news_sentiment module
-    fh_sentiment = _safe(errors, "finnhub.sentiment", lambda: get_provider("finnhub").get_news_sentiment(ticker))
+    # Finnhub aggregate sentiment is a paid endpoint — always 403 on free tier.
+    # We rely on the news_sentiment module's keyword polarity over the headlines instead.
     sentiment_score = None
-    if isinstance(fh_sentiment, dict):
-        # Finnhub returns "companyNewsScore" in [0,1]; map to [-1, +1]
-        score = fh_sentiment.get("companyNewsScore")
-        if score is not None:
-            try:
-                sentiment_score = float(score) * 2 - 1
-            except (TypeError, ValueError):
-                pass
 
     # ---- social (only if Reddit configured) ----
     social = []

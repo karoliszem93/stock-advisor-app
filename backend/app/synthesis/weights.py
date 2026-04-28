@@ -148,7 +148,8 @@ def filter_for_profile(risk: str, analysis: dict, asset_type: str) -> tuple[bool
             return False, "extreme volatility fails conservative filter"
         if asset_type == "equity" and piotroski is not None and piotroski < 5:
             return False, f"Piotroski {piotroski} < 5 fails conservative filter"
-        if etf_meta.get("category", "").startswith(("leveraged", "inverse")):
+        category = etf_meta.get("category") or ""  # tolerate None
+        if category.startswith(("leveraged", "inverse")):
             return False, "leveraged/inverse ETF fails conservative filter"
 
     elif risk == "balanced":

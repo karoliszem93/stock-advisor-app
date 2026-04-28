@@ -18,6 +18,10 @@ logging.basicConfig(
     level=get_settings().log_level,
     format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
 )
+# Silence successful-HTTP request logs from httpx — they drown out the
+# pipeline's own progress lines. Errors still surface from each provider.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("yfinance").setLevel(logging.ERROR)
 log = logging.getLogger("app.main")
 
 

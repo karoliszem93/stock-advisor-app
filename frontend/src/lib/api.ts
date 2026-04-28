@@ -1,4 +1,11 @@
-// Typed fetch helpers. Base URL is the same origin (Vite proxies /api and /health).
+// Typed fetch helpers. Vite proxies /api and /health to the backend.
+
+export type Direction = "buy" | "avoid" | "sell_short";
+export type RiskProfile = "conservative" | "balanced" | "growth" | "aggressive";
+export type Timeframe = "1w" | "2w" | "1m" | "3m" | "6m" | "1y" | "3y";
+
+export const RISK_PROFILES: RiskProfile[] = ["conservative", "balanced", "growth", "aggressive"];
+export const TIMEFRAMES: Timeframe[] = ["1w", "2w", "1m", "3m", "6m", "1y", "3y"];
 
 export interface HealthResponse {
   status: "ok";
@@ -15,14 +22,30 @@ export interface HealthResponse {
   };
 }
 
+export interface Rationale {
+  headline?: string;
+  technical_case?: string;
+  fundamental_case?: string;
+  sentiment_case?: string;
+  macro_context?: string;
+  why_this_timeframe?: string;
+  key_risks?: string[];
+  invalidation_triggers?: string[];
+  counter_argument?: string;
+  confidence_drivers?: { factor: string; delta: number; reason: string }[];
+  tax_notes?: string;
+  data_quality?: "full" | "degraded" | "missing";
+  price_notes?: string[];
+}
+
 export interface Suggestion {
   id: number;
   suggestion_date: string;
   ticker: string;
-  asset_type: string;
-  timeframe: string;
-  risk_profile: string;
-  direction: "buy" | "avoid" | "sell_short";
+  asset_type: "equity" | "etf";
+  timeframe: Timeframe;
+  risk_profile: RiskProfile;
+  direction: Direction;
   confidence: number;
   confidence_calibrated: number | null;
   target_date: string;
@@ -31,6 +54,13 @@ export interface Suggestion {
   stop_loss_eur: number | null;
   target_price_eur: number | null;
   suggested_risk_pct: number | null;
+  data_repo_commit_sha: string | null;
+}
+
+export interface SuggestionDetail extends Suggestion {
+  rationale: Rationale | null;
+  suggestion_json_path: string | null;
+  analysis_json_path: string | null;
 }
 
 export interface WatchlistItem {
@@ -55,6 +85,61 @@ export interface ProviderStatus {
   error?: string;
 }
 
+export interface ValidationRow {
+  id: number;
+  suggestion_id: number;
+  validated_at: string;
+  outcome: "correct" | "incorrect" | "partial";
+  outcome_score: number;
+  actual_total_return_pct_eur: number | null;
+  after_tax_return_pct_eur: number | null;
+  actual_price_return_pct: number | null;
+  actual_dividend_return_pct: number | null;
+  actual_fx_effect_pct: number | null;
+  max_favorable_excursion_pct: number | null;
+  max_adverse_excursion_pct: number | null;
+  target_hit: boolean | null;
+  stop_hit: boolean | null;
+  ticker: string | null;
+  timeframe: string | null;
+  risk_profile: string | null;
+  direction: string | null;
+  confidence: number | null;
+  confidence_calibrated: number | null;
+}
+
+export interface AggregatePerformance {
+  ready: boolean;
+  reason?: string;
+  total_validated: number;
+  overall: {
+    hit_rate: number;
+    mean_outcome_score: number;
+    mean_return_pct_eur: number | null;
+  };
+  by_cell: Record<
+    string,
+    {
+      n: number;
+      hit_rate: number;
+      mean_outcome_score: number;
+      mean_return_pct_eur: number | null;
+    }
+  >;
+}
+
+export interface RunLog {
+  id: number;
+  run_type: string;
+  status: "running" | "ok" | "partial" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  code_sha: string | null;
+  ollama_model: string | null;
+  summary: Record<string, unknown> | null;
+  errors: Record<string, string> | null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -64,9 +149,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+function qs(params: Record<string, string | number | undefined | null>): string {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "");
+  if (entries.length === 0) return "";
+  return "?" + entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join("&");
+}
+
 export const api = {
   health: () => request<HealthResponse>("/health"),
-  suggestions: () => request<Suggestion[]>("/api/suggestions/"),
+
+  suggestions: {
+    list: (filters: {
+      on_date?: string;
+      risk?: RiskProfile;
+      timeframe?: Timeframe;
+      ticker?: string;
+      direction?: Direction;
+      limit?: number;
+    } = {}) => request<Suggestion[]>(`/api/suggestions/${qs(filters)}`),
+    get: (id: number) => request<SuggestionDetail>(`/api/suggestions/${id}`),
+    byTicker: (ticker: string) =>
+      request<SuggestionDetail[]>(`/api/suggestions/by-ticker/${encodeURIComponent(ticker)}`),
+    distinctDates: () => request<string[]>("/api/suggestions/distinct-dates"),
+    distinctTickers: () => request<string[]>("/api/suggestions/distinct-tickers"),
+  },
+
   watchlist: {
     list: () => request<WatchlistItem[]>("/api/watchlist/"),
     add: (ticker: string, note?: string) =>
@@ -77,8 +184,23 @@ export const api = {
     remove: (ticker: string) =>
       request<{ removed: string }>(`/api/watchlist/${ticker}`, { method: "DELETE" }),
   },
-  validations: () => request<unknown[]>("/api/validations/"),
+
+  validations: {
+    list: (limit = 200) => request<ValidationRow[]>(`/api/validations/?limit=${limit}`),
+    aggregate: () => request<AggregatePerformance>("/api/validations/aggregate"),
+  },
+
   providers: () => request<ProviderStatus[]>("/api/providers/"),
+
+  runs: {
+    list: (limit = 20, run_type?: string) =>
+      request<RunLog[]>(`/api/runs/${qs({ limit, run_type })}`),
+    latest: (run_type = "daily_pipeline") =>
+      request<RunLog | null>(`/api/runs/latest${qs({ run_type })}`),
+  },
+
   triggerDailyRun: () =>
     request<{ triggered: string }>("/api/run/daily", { method: "POST" }),
+  triggerValidation: () =>
+    request<{ triggered: string }>("/api/run/validate", { method: "POST" }),
 };

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db import init_db
-from app.routes import health, providers, run, suggestions, validations, watchlist
+from app.routes import health, providers, run, runs, suggestions, validations, watchlist
 from app.scheduler import shutdown_scheduler, start_scheduler
 
 logging.basicConfig(
@@ -56,3 +56,4 @@ app.include_router(validations.router, prefix="/api/validations", tags=["validat
 app.include_router(watchlist.router, prefix="/api/watchlist", tags=["watchlist"])
 app.include_router(run.router, prefix="/api/run", tags=["run"])
 app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
+app.include_router(runs.router, prefix="/api/runs", tags=["runs"])

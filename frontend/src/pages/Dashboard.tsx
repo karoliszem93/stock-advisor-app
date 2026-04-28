@@ -1,38 +1,68 @@
-import { useEffect, useState } from "react";
-import { api, type HealthResponse, type Suggestion } from "../lib/api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  api,
+  RISK_PROFILES,
+  TIMEFRAMES,
+  type Direction,
+  type RiskProfile,
+  type Suggestion,
+  type Timeframe,
+} from "../lib/api";
+import RunBanner from "../components/RunBanner";
+import SuggestionTable from "../components/SuggestionTable";
+
+const DIRECTIONS: Direction[] = ["buy", "avoid", "sell_short"];
 
 export default function Dashboard() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[] | null>(null);
+  const [dates, setDates] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+
+  // Filters
+  const [date, setDate] = useState<string>("");
+  const [risk, setRisk] = useState<RiskProfile | "">("");
+  const [timeframe, setTimeframe] = useState<Timeframe | "">("");
+  const [direction, setDirection] = useState<Direction | "">("");
+  const [tickerFilter, setTickerFilter] = useState<string>("");
 
   useEffect(() => {
-    api.health().then(setHealth).catch((e) => setError(String(e)));
-    api.suggestions().then(setSuggestions).catch(() => {});
+    api.suggestions.distinctDates().then((ds) => {
+      setDates(ds);
+      // Default to most recent date if available
+      if (ds.length > 0) setDate(ds[0]);
+    });
   }, []);
 
-  async function runNow() {
-    setBusy(true);
-    try {
-      await api.triggerDailyRun();
-      // Pipeline is async on the server. UI can poll /health or refresh later.
-      setTimeout(() => api.suggestions().then(setSuggestions), 1500);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    setSuggestions(null);
+    api.suggestions
+      .list({
+        on_date: date || undefined,
+        risk: risk || undefined,
+        timeframe: timeframe || undefined,
+        direction: direction || undefined,
+        ticker: tickerFilter || undefined,
+        limit: 500,
+      })
+      .then(setSuggestions)
+      .catch((e) => setError(String(e)));
+  }, [date, risk, timeframe, direction, tickerFilter]);
+
+  const counts = useMemo(() => {
+    if (!suggestions) return null;
+    const total = suggestions.length;
+    const byDir = { buy: 0, avoid: 0, sell_short: 0 };
+    for (const s of suggestions) byDir[s.direction]++;
+    return { total, byDir };
+  }, [suggestions]);
 
   return (
-    <div className="max-w-5xl">
-      <header className="mb-6">
-        <h2 className="text-2xl font-semibold">Today's suggestions</h2>
-        <p className="text-sm text-gray-400 mt-1">
-          {health?.schedule ?? "Loading scheduler config..."}
-        </p>
+    <div className="max-w-screen-2xl">
+      <header className="mb-4">
+        <h2 className="text-2xl font-semibold">Dashboard</h2>
       </header>
+
+      <RunBanner />
 
       {error && (
         <div className="mb-4 rounded border border-danger/40 bg-danger/10 p-3 text-sm">
@@ -40,108 +70,121 @@ export default function Dashboard() {
         </div>
       )}
 
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <Card title="Backend">
-          {health ? (
-            <ul className="text-sm space-y-1">
-              <li>Version: {health.version}</li>
-              <li>Currency: {health.config.base_currency}</li>
-              <li>
-                GitHub PAT:{" "}
-                {health.config.github_pat_present ? (
-                  <span className="text-accent">present</span>
-                ) : (
-                  <span className="text-warn">missing</span>
-                )}
-              </li>
-              <li>Ollama: {health.config.ollama_model}</li>
-            </ul>
-          ) : (
-            <span className="text-gray-500">connecting...</span>
-          )}
-        </Card>
-        <Card title="Data providers">
-          {health ? (
-            <ul className="text-sm space-y-1">
-              {Object.entries(health.config.providers_with_keys).map(([k, v]) => (
-                <li key={k} className="flex justify-between">
-                  <span>{k}</span>
-                  <span className={v ? "text-accent" : "text-gray-500"}>
-                    {v ? "configured" : "no key yet"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <span className="text-gray-500">...</span>
-          )}
-        </Card>
-      </section>
+      {/* Filter bar */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Field label="Date">
+          <select
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="bg-bg border border-border rounded px-2 py-1 text-sm"
+          >
+            <option value="">Any</option>
+            {dates.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </Field>
 
-      <section className="mb-6">
-        <button
-          onClick={runNow}
-          disabled={busy}
-          className="px-4 py-2 rounded bg-accent text-bg font-medium disabled:opacity-50"
-        >
-          {busy ? "Triggering..." : "Run pipeline now"}
-        </button>
-        <span className="ml-3 text-xs text-gray-500">
-          Async — refresh in a moment to see results once Phase 3 ships.
-        </span>
-      </section>
+        <Field label="Risk">
+          <select
+            value={risk}
+            onChange={(e) => setRisk(e.target.value as RiskProfile | "")}
+            className="bg-bg border border-border rounded px-2 py-1 text-sm capitalize"
+          >
+            <option value="">All</option>
+            {RISK_PROFILES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </Field>
 
-      <section>
-        <h3 className="text-lg font-medium mb-3">Suggestions</h3>
-        {suggestions.length === 0 ? (
-          <div className="rounded border border-border bg-panel/30 p-6 text-sm text-gray-400">
-            No suggestions yet. The pipeline is a no-op skeleton until Phase 3 ships
-            (Ollama-driven synthesis).
-          </div>
-        ) : (
-          <div className="rounded border border-border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-panel/60 text-gray-400 text-left">
-                <tr>
-                  <th className="px-3 py-2">Date</th>
-                  <th className="px-3 py-2">Ticker</th>
-                  <th className="px-3 py-2">Risk</th>
-                  <th className="px-3 py-2">Timeframe</th>
-                  <th className="px-3 py-2">Direction</th>
-                  <th className="px-3 py-2">Conf</th>
-                  <th className="px-3 py-2">Headline</th>
-                </tr>
-              </thead>
-              <tbody>
-                {suggestions.map((s) => (
-                  <tr key={s.id} className="border-t border-border">
-                    <td className="px-3 py-2">{s.suggestion_date}</td>
-                    <td className="px-3 py-2 font-mono">{s.ticker}</td>
-                    <td className="px-3 py-2">{s.risk_profile}</td>
-                    <td className="px-3 py-2">{s.timeframe}</td>
-                    <td className="px-3 py-2 uppercase">{s.direction}</td>
-                    <td className="px-3 py-2">
-                      {(s.confidence * 100).toFixed(0)}%
-                    </td>
-                    <td className="px-3 py-2 text-gray-300">{s.headline}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <Field label="Timeframe">
+          <select
+            value={timeframe}
+            onChange={(e) => setTimeframe(e.target.value as Timeframe | "")}
+            className="bg-bg border border-border rounded px-2 py-1 text-sm font-mono"
+          >
+            <option value="">All</option>
+            {TIMEFRAMES.map((tf) => (
+              <option key={tf} value={tf}>
+                {tf}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Direction">
+          <select
+            value={direction}
+            onChange={(e) => setDirection(e.target.value as Direction | "")}
+            className="bg-bg border border-border rounded px-2 py-1 text-sm uppercase"
+          >
+            <option value="">All</option>
+            {DIRECTIONS.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+        </Field>
+
+        <Field label="Ticker">
+          <input
+            value={tickerFilter}
+            onChange={(e) => setTickerFilter(e.target.value.toUpperCase())}
+            placeholder="AAPL"
+            className="bg-bg border border-border rounded px-2 py-1 text-sm w-28 font-mono"
+          />
+        </Field>
+
+        {(risk || timeframe || direction || tickerFilter) && (
+          <button
+            onClick={() => {
+              setRisk("");
+              setTimeframe("");
+              setDirection("");
+              setTickerFilter("");
+            }}
+            className="text-xs text-gray-400 hover:text-accent ml-2"
+          >
+            Clear filters
+          </button>
         )}
-      </section>
+      </div>
+
+      {/* Counts strip */}
+      {counts && (
+        <div className="mb-3 text-xs text-gray-400 flex gap-3">
+          <span>{counts.total} total</span>
+          <span>·</span>
+          <span className="text-accent">{counts.byDir.buy} buy</span>
+          <span>·</span>
+          <span className="text-danger">{counts.byDir.sell_short} sell-short</span>
+          <span>·</span>
+          <span>{counts.byDir.avoid} avoid</span>
+        </div>
+      )}
+
+      {suggestions === null ? (
+        <div className="rounded border border-border bg-panel/30 p-6 text-sm text-gray-400">
+          Loading suggestions...
+        </div>
+      ) : (
+        <SuggestionTable suggestions={suggestions} />
+      )}
     </div>
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="rounded border border-border bg-panel/40 p-4">
-      <div className="text-xs text-gray-400 uppercase tracking-wide mb-2">
-        {title}
-      </div>
+    <label className="flex items-center gap-2 text-xs text-gray-400">
+      <span className="uppercase tracking-wide">{label}</span>
       {children}
-    </div>
+    </label>
   );
 }

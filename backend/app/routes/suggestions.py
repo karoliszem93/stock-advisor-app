@@ -1,17 +1,50 @@
-"""Suggestion read endpoints — populated in Phase 3."""
+"""Suggestion read endpoints."""
 
 from __future__ import annotations
 
 from datetime import date
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import Suggestion
 
 router = APIRouter()
+
+
+@router.get("/distinct-dates")
+def distinct_dates(db: Session = Depends(get_db)) -> list[str]:
+    rows = db.scalars(
+        select(distinct(Suggestion.suggestion_date)).order_by(Suggestion.suggestion_date.desc())
+    ).all()
+    return [d.isoformat() for d in rows]
+
+
+@router.get("/distinct-tickers")
+def distinct_tickers(db: Session = Depends(get_db)) -> list[str]:
+    rows = db.scalars(
+        select(distinct(Suggestion.ticker)).order_by(Suggestion.ticker.asc())
+    ).all()
+    return list(rows)
+
+
+@router.get("/by-ticker/{ticker}")
+def suggestions_by_ticker(
+    ticker: str,
+    db: Session = Depends(get_db),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> list[dict]:
+    """All suggestions for one ticker, latest first — powers the ticker view."""
+    stmt = (
+        select(Suggestion)
+        .where(Suggestion.ticker == ticker.upper())
+        .order_by(Suggestion.suggestion_date.desc(), Suggestion.timeframe.asc())
+        .limit(limit)
+    )
+    rows = db.scalars(stmt).all()
+    return [_row_to_dict(r) for r in rows]
 
 
 @router.get("/")
@@ -21,6 +54,7 @@ def list_suggestions(
     risk: str | None = Query(default=None),
     timeframe: str | None = Query(default=None),
     ticker: str | None = Query(default=None),
+    direction: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[dict]:
     stmt = select(Suggestion).order_by(Suggestion.suggestion_date.desc(), Suggestion.confidence.desc())
@@ -32,6 +66,8 @@ def list_suggestions(
         stmt = stmt.where(Suggestion.timeframe == timeframe)
     if ticker:
         stmt = stmt.where(Suggestion.ticker == ticker.upper())
+    if direction:
+        stmt = stmt.where(Suggestion.direction == direction)
     stmt = stmt.limit(limit)
     rows = db.scalars(stmt).all()
     return [_row_to_dict(r) for r in rows]

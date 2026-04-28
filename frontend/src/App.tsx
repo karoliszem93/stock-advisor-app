@@ -3,6 +3,8 @@ import Dashboard from "./pages/Dashboard";
 import Watchlist from "./pages/Watchlist";
 import Validations from "./pages/Validations";
 import Settings from "./pages/Settings";
+import SuggestionDetail from "./pages/SuggestionDetail";
+import TickerView from "./pages/TickerView";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `block px-3 py-2 rounded text-sm ${
@@ -30,6 +32,8 @@ export default function App() {
           <Route path="/watchlist" element={<Watchlist />} />
           <Route path="/validations" element={<Validations />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/suggestion/:id" element={<SuggestionDetail />} />
+          <Route path="/ticker/:ticker" element={<TickerView />} />
         </Routes>
       </main>
     </div>

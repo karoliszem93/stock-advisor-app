@@ -103,7 +103,8 @@ export default function RunBanner() {
         )}
         <button
           onClick={trigger}
-          disabled={busy || run.status === "running"}
+          disabled={busy}
+          title={run.status === "running" ? "A run is already in progress — clicking will start a parallel run" : "Trigger a pipeline run"}
           className="px-3 py-1 rounded bg-accent text-bg text-xs font-medium disabled:opacity-50"
         >
           {busy ? "..." : "Run now"}

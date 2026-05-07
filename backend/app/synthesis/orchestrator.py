@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterable
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.orm import Session
 
 from app.analysis.base import AnalysisContext, ModuleResult
@@ -48,7 +49,7 @@ from app.services.snapshot import (
     build_ticker_context,
 )
 from app.services.universe import UniverseEntry, resolve_universe
-from app.synthesis.ollama_client import OllamaClient
+from app.synthesis.llm import get_llm_client
 from app.synthesis.pricing import price_cell
 from app.synthesis.scorer import Candidate, score_candidate, top_n_per_cell
 from app.synthesis.thesis import BaseThesis, adapt_thesis_for_cell, generate_base_thesis
@@ -73,16 +74,42 @@ class RunSummary:
 # ---------------------------------------------------------------------------
 # Top-level entry
 # ---------------------------------------------------------------------------
-def generate_suggestions(snapshot_date: date, db: Session) -> RunSummary:
-    """Run the full synthesis pipeline for one snapshot date."""
+def generate_suggestions(
+    snapshot_date: date,
+    db: Session,
+    *,
+    universe: list[UniverseEntry] | None = None,
+    delete_existing_for_tickers: list[str] | None = None,
+) -> RunSummary:
+    """Run the synthesis pipeline for one snapshot date.
+
+    Optional `universe` param — when given, restricts the run to those
+    entries instead of the watchlist + curated ETFs default. Used by the
+    single-ticker pipeline.
+
+    Optional `delete_existing_for_tickers` — if set, deletes any existing
+    Suggestion rows for those tickers on this snapshot_date before running.
+    Prevents duplicates on re-run.
+    """
     import time
     started = time.time()
+
+    if delete_existing_for_tickers:
+        for ticker in delete_existing_for_tickers:
+            db.execute(
+                sa_delete(Suggestion).where(
+                    Suggestion.ticker == ticker.upper(),
+                    Suggestion.suggestion_date == snapshot_date,
+                )
+            )
+        db.commit()
 
     log.info("synthesis: building per-run context")
     macro = build_macro_context()
     benchmark_ohlcv = build_benchmark_ohlcv("SPY")
 
-    universe = resolve_universe(db)
+    if universe is None:
+        universe = resolve_universe(db)
     log.info("synthesis: universe size=%d", len(universe))
 
     # ---- 1. Snapshot + analysis per ticker ----
@@ -118,16 +145,31 @@ def generate_suggestions(snapshot_date: date, db: Session) -> RunSummary:
     unique_tickers = {c.ticker for cell in cell_candidates.values() for c in cell}
     log.info("synthesis: %d unique tickers across all cells; calling LLM", len(unique_tickers))
 
-    client = OllamaClient()
+    client = get_llm_client()
     available, message = client.is_available()
+    log.info("LLM client: %s — %s", type(client).__name__, message)
     if not available:
-        log.warning("Ollama not available (%s) — all theses will use template fallback", message)
+        log.warning("LLM not available (%s) — all theses will use template fallback", message)
+
+    from app.config import get_settings
+    import time as _time
+    settings = get_settings()
+    inter_call = float(getattr(settings, "llm_inter_call_delay_seconds", 0.0) or 0.0)
 
     base_theses: dict[str, BaseThesis] = {}
     llm_calls = 0
     fallbacks = 0
-    for ticker in sorted(unique_tickers):
+    last_call_at = 0.0
+    for i, ticker in enumerate(sorted(unique_tickers), 1):
         ctx, results = analyses[ticker]
+
+        # Rate-limit: if we're still inside the inter-call window, sleep.
+        if available and inter_call > 0 and last_call_at > 0:
+            elapsed = _time.time() - last_call_at
+            if elapsed < inter_call:
+                _time.sleep(inter_call - elapsed)
+
+        log.info("LLM (%d/%d) — %s", i, len(unique_tickers), ticker)
         try:
             thesis = generate_base_thesis(ctx, results, client=client if available else None)
             base_theses[ticker] = thesis
@@ -138,6 +180,7 @@ def generate_suggestions(snapshot_date: date, db: Session) -> RunSummary:
         except Exception as exc:  # noqa: BLE001
             log.exception("thesis generation failed for %s", ticker)
             fallbacks += 1
+        last_call_at = _time.time()
 
     # ---- 4. Build & persist Suggestion rows ----
     created = 0

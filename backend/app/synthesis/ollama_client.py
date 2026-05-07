@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.config import get_settings
+from app.synthesis.llm import LLMResponse
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +30,8 @@ class OllamaError(RuntimeError):
     response cannot be parsed."""
 
 
-@dataclass
-class OllamaResponse:
-    text: str
-    parsed: dict | None
-    eval_count: int | None
-    duration_ms: int | None
+# Backwards-compatible alias — older code may still import OllamaResponse
+OllamaResponse = LLMResponse
 
 
 class OllamaClient:
@@ -115,7 +111,7 @@ class OllamaClient:
             parsed = None
             # Caller can decide to retry with a stricter reminder.
 
-        return OllamaResponse(
+        return LLMResponse(
             text=text,
             parsed=parsed,
             eval_count=blob.get("eval_count"),

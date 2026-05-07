@@ -22,7 +22,8 @@ export default function Dashboard() {
   const [date, setDate] = useState<string>("");
   const [risk, setRisk] = useState<RiskProfile | "">("");
   const [timeframe, setTimeframe] = useState<Timeframe | "">("");
-  const [direction, setDirection] = useState<Direction | "">("");
+  // Default to BUY — the most actionable view for the morning brief.
+  const [direction, setDirection] = useState<Direction | "">("buy");
   const [tickerFilter, setTickerFilter] = useState<string>("");
 
   useEffect(() => {

@@ -1,8 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, RISK_PROFILES, TIMEFRAMES, type SuggestionDetail } from "../lib/api";
+import { parseTicker } from "../lib/tickers";
 import Confidence from "../components/Confidence";
 import DirectionBadge from "../components/DirectionBadge";
+import HeaderTooltip from "../components/HeaderTooltip";
+
+const TICKER_TF_TOOLTIPS: Record<string, string> = {
+  Date: "Date the suggestion was generated.",
+  Risk: "Conservative / Balanced / Growth / Aggressive — risk profile this call is tailored to.",
+  TF: "Timeframe — 1w / 2w / 1m / 3m / 6m / 1y / 3y. Target date = suggestion date + this window.",
+  Direction:
+    "BUY = bullish; AVOID = no clear signal — pass; SELL-SHORT = bearish (or sell if you hold it). " +
+    "T212 Invest doesn't allow shorts, so SELL-SHORT is best read as 'don't buy / consider selling'.",
+  Conf: "Confidence in the call. (raw) means uncalibrated until ≥50 validated outcomes exist.",
+  "Target €": "Profit target in EUR.",
+  Headline: "One-line thesis summary. Click for the full structured rationale.",
+};
 
 export default function TickerView() {
   const { ticker } = useParams<{ ticker: string }>();
@@ -56,8 +70,21 @@ export default function TickerView() {
       </Link>
 
       <header className="my-4">
-        <h2 className="text-2xl font-mono font-semibold">{ticker}</h2>
-        <p className="text-sm text-gray-400">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-mono font-semibold">
+            {ticker ? parseTicker(ticker).display : ""}
+          </h2>
+          {ticker && parseTicker(ticker).exchange !== "US" && (
+            <span
+              className="text-xs text-gray-400 px-2 py-0.5 rounded border border-border"
+              title={parseTicker(ticker).exchangeFull}
+            >
+              {parseTicker(ticker).exchange}
+            </span>
+          )}
+          <span className="text-xs text-gray-500 font-mono">{ticker}</span>
+        </div>
+        <p className="text-sm text-gray-400 mt-1">
           All suggestions across risk profiles and timeframes.{" "}
           {items.length === 0
             ? "No suggestions on record yet."
@@ -156,13 +183,13 @@ export default function TickerView() {
                 <table className="w-full text-sm">
                   <thead className="bg-panel/60 text-gray-400 text-left">
                     <tr>
-                      <th className="px-3 py-2">Date</th>
-                      <th className="px-3 py-2">Risk</th>
-                      <th className="px-3 py-2">TF</th>
-                      <th className="px-3 py-2">Direction</th>
-                      <th className="px-3 py-2">Conf</th>
-                      <th className="px-3 py-2">Target €</th>
-                      <th className="px-3 py-2">Headline</th>
+                      <HeaderTooltip name="Date" tip={TICKER_TF_TOOLTIPS.Date} />
+                      <HeaderTooltip name="Risk" tip={TICKER_TF_TOOLTIPS.Risk} />
+                      <HeaderTooltip name="TF" tip={TICKER_TF_TOOLTIPS.TF} />
+                      <HeaderTooltip name="Direction" tip={TICKER_TF_TOOLTIPS.Direction} />
+                      <HeaderTooltip name="Conf" tip={TICKER_TF_TOOLTIPS.Conf} />
+                      <HeaderTooltip name="Target €" tip={TICKER_TF_TOOLTIPS["Target €"]} />
+                      <HeaderTooltip name="Headline" tip={TICKER_TF_TOOLTIPS.Headline} />
                     </tr>
                   </thead>
                   <tbody>

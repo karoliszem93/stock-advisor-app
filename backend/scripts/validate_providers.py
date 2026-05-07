@@ -180,8 +180,185 @@ def check_simfin(env: dict) -> tuple[bool, str]:
     return False, f"status={status} body={raw[:160]}"
 
 
+def check_openrouter(env: dict) -> tuple[bool, str]:
+    """Verify the OpenRouter API key with a tiny request."""
+    if (env.get("LLM_PROVIDER") or "").lower() != "openrouter":
+        return None, "skipped — LLM_PROVIDER is not 'openrouter'"
+    key = env.get("OPENROUTER_API_KEY")
+    if not key:
+        return False, "no key in .env"
+    model = env.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Reply with valid JSON only."},
+            {"role": "user", "content": 'Reply with this JSON: {"reply": "PONG"}'},
+        ],
+        "response_format": {"type": "json_object"},
+        # Reasoning models (DeepSeek V4 Pro etc.) spend tokens on internal
+        # chain-of-thought before output. Generous budget so the probe lands
+        # actual content rather than coming back with content=null.
+        "max_tokens": 512,
+    }).encode()
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:5173",
+            "X-Title": "stock-advisor",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            blob = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        return False, f"status={e.code} body={body_text[:200]}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, f"{e!r}"
+
+    choices = blob.get("choices") or []
+    msg = choices[0].get("message", {}) if choices else {}
+    # `content` may be None for reasoning models if max_tokens was tight.
+    # Fall back to `reasoning` (the model's chain-of-thought) so we still
+    # confirm the API call landed.
+    text = (msg.get("content") or msg.get("reasoning") or "").strip()
+    usage = blob.get("usage") or {}
+    return True, (
+        f"OK ({model}; reply='{text[:30]}'; "
+        f"tokens={usage.get('prompt_tokens')}/{usage.get('completion_tokens')})"
+    )
+
+
+def check_gemini(env: dict) -> tuple[bool, str]:
+    """Verify the Gemini API key with a tiny request."""
+    provider = (env.get("LLM_PROVIDER") or "").lower()
+    if provider != "gemini":
+        return None, f"skipped — LLM_PROVIDER is '{provider}', not 'gemini'"
+    key = env.get("GEMINI_API_KEY")
+    if not key:
+        return False, "no key in .env"
+    model = env.get("GEMINI_MODEL", "gemini-2.5-flash")
+    body = json.dumps({
+        "system_instruction": {"parts": [{"text": "Respond with valid JSON."}]},
+        "contents": [{"role": "user", "parts": [{"text": 'Reply with this JSON: {"reply": "PONG"}'}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "maxOutputTokens": 32,
+        },
+    }).encode()
+    req = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        data=body,
+        headers={
+            "x-goog-api-key": key,
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            blob = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        return False, f"status={e.code} body={body_text[:200]}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, f"{e!r}"
+    text = ""
+    for cand in (blob.get("candidates") or []):
+        for part in (cand.get("content") or {}).get("parts", []):
+            text += part.get("text", "")
+    usage = blob.get("usageMetadata") or {}
+    return True, (
+        f"OK ({model}; reply='{text.strip()[:30]}'; "
+        f"tokens={usage.get('promptTokenCount')}/{usage.get('candidatesTokenCount')})"
+    )
+
+
+def check_openai(env: dict) -> tuple[bool, str]:
+    """Verify the OpenAI API key with a tiny request."""
+    if (env.get("LLM_PROVIDER") or "").lower() != "openai":
+        return None, "skipped — LLM_PROVIDER is not 'openai'"
+    key = env.get("OPENAI_API_KEY")
+    if not key:
+        return False, "no key in .env"
+    model = env.get("OPENAI_MODEL", "gpt-4o-mini")
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Reply with valid JSON only."},
+            {"role": "user", "content": 'Reply with this JSON: {"reply": "PONG"}'},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 16,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            blob = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        return False, f"status={e.code} body={body_text[:200]}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, f"{e!r}"
+
+    choices = blob.get("choices") or []
+    text = (choices[0].get("message", {}).get("content", "") if choices else "")
+    usage = blob.get("usage") or {}
+    return True, (
+        f"OK ({model}; reply='{text.strip()[:30]}'; "
+        f"tokens={usage.get('prompt_tokens')}/{usage.get('completion_tokens')})"
+    )
+
+
+def check_anthropic(env: dict) -> tuple[bool, str]:
+    """Verify the Anthropic API key with a tiny request."""
+    if (env.get("LLM_PROVIDER") or "").lower() != "anthropic":
+        return None, "skipped — LLM_PROVIDER is not 'anthropic'"
+    key = env.get("ANTHROPIC_API_KEY")
+    if not key:
+        return False, "no key in .env"
+    model = env.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    body = json.dumps({
+        "model": model,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "Say only the word PONG."}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            blob = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        return False, f"status={e.code} body={body_text[:200]}"
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        return False, f"{e!r}"
+
+    text = "".join(b.get("text", "") for b in (blob.get("content") or []) if b.get("type") == "text")
+    usage = blob.get("usage") or {}
+    return True, f"OK ({model}; reply='{text.strip()[:30]}'; tokens={usage.get('input_tokens')}/{usage.get('output_tokens')})"
+
+
 def check_ollama(env: dict) -> tuple[bool, str]:
     """Verify the Ollama daemon is running and the configured model is installed."""
+    if (env.get("LLM_PROVIDER") or "ollama").lower() != "ollama":
+        return None, "skipped — LLM_PROVIDER is not 'ollama'"
     host = env.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
     want_model = env.get("OLLAMA_MODEL", "qwen2.5:14b")
     try:
@@ -243,6 +420,10 @@ def main() -> int:
         ("newsapi",      lambda: check_newsapi(env)),
         ("simfin",       lambda: check_simfin(env)),
         ("reddit",       lambda: check_reddit(env)),
+        ("openrouter",   lambda: check_openrouter(env)),
+        ("gemini",       lambda: check_gemini(env)),
+        ("openai",       lambda: check_openai(env)),
+        ("anthropic",    lambda: check_anthropic(env)),
         ("ollama",       lambda: check_ollama(env)),
     ]
 

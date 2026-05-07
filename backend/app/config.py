@@ -42,9 +42,22 @@ class Settings(BaseSettings):
     git_author_email: str = "karolis.zem93@gmail.com"
 
     # ----- llm -----
+    llm_provider: str = "ollama"   # "gemini" | "openai" | "anthropic" | "ollama"
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b"
     ollama_timeout_seconds: int = 180
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    openrouter_api_key: str | None = None
+    openrouter_model: str = "deepseek/deepseek-v4-pro"
+    # Inter-call delay (seconds) for rate-limited free-tier APIs.
+    # Free Gemini tier is ~5 requests/minute → 12s between calls keeps us well under.
+    # Set to 0 for paid OpenRouter (no per-key per-minute cap on most models).
+    llm_inter_call_delay_seconds: float = 12.0
 
     # ----- providers -----
     alphavantage_api_key: str | None = None

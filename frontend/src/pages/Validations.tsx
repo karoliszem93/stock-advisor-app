@@ -7,6 +7,42 @@ import {
   type AggregatePerformance,
   type ValidationRow,
 } from "../lib/api";
+import { parseTicker } from "../lib/tickers";
+import HeaderTooltip from "../components/HeaderTooltip";
+
+// Tooltip text per column header in the validations table.
+const VAL_TOOLTIPS: Record<string, string> = {
+  Validated: "Date the validation sweep scored this suggestion (after target_date passed).",
+  Ticker: "Stock or ETF symbol — click to open the per-ticker grid.",
+  Exchange: "Exchange where this listing trades.",
+  Risk: "Risk profile this suggestion was tailored to.",
+  TF: "Timeframe — how far out the call was meant to play out.",
+  Direction:
+    "BUY = bullish; AVOID = no clear signal — pass; SELL-SHORT = bearish " +
+    "(or sell if you held it).",
+  Outcome:
+    "How the call resolved: CORRECT = direction right + magnitude meaningful; " +
+    "INCORRECT = direction wrong or stop-hit; PARTIAL = right direction but " +
+    "didn't reach target / hit stop first.",
+  Score:
+    "Outcome score in [-1, +1]. ≈ price_return × 5 (so ±20% maps to ±1.0). " +
+    "For 'Avoid' suggestions: small realized move → +0.5; large missed move → negative.",
+  "Total € ret":
+    "Realized total return in EUR including price + dividends + FX effect. Gross of tax.",
+  "After-tax":
+    "After applying LT 15% capital gains and dividend withholding (€500 annual exemption " +
+    "not modeled per-trade).",
+  MFE:
+    "Maximum Favorable Excursion — best-case unrealized gain reached during the window. " +
+    "Tells you whether the trade went in your favor at any point.",
+  MAE:
+    "Maximum Adverse Excursion — worst-case unrealized drawdown during the window. " +
+    "Tells you how much the position bled before resolving.",
+};
+
+function VHeader({ name, align = "left" }: { name: string; align?: "left" | "right" }) {
+  return <HeaderTooltip name={name} tip={VAL_TOOLTIPS[name]} align={align} />;
+}
 
 export default function Validations() {
   const [rows, setRows] = useState<ValidationRow[] | null>(null);
@@ -52,17 +88,18 @@ export default function Validations() {
           <table className="w-full text-sm">
             <thead className="bg-panel/60 text-gray-400 text-left">
               <tr>
-                <th className="px-3 py-2">Validated</th>
-                <th className="px-3 py-2">Ticker</th>
-                <th className="px-3 py-2">Risk</th>
-                <th className="px-3 py-2">TF</th>
-                <th className="px-3 py-2">Direction</th>
-                <th className="px-3 py-2">Outcome</th>
-                <th className="px-3 py-2 text-right">Score</th>
-                <th className="px-3 py-2 text-right">Total € ret</th>
-                <th className="px-3 py-2 text-right">After-tax</th>
-                <th className="px-3 py-2 text-right">MFE</th>
-                <th className="px-3 py-2 text-right">MAE</th>
+                <VHeader name="Validated" />
+                <VHeader name="Ticker" />
+                <VHeader name="Exchange" />
+                <VHeader name="Risk" />
+                <VHeader name="TF" />
+                <VHeader name="Direction" />
+                <VHeader name="Outcome" />
+                <VHeader name="Score" align="right" />
+                <VHeader name="Total € ret" align="right" />
+                <VHeader name="After-tax" align="right" />
+                <VHeader name="MFE" align="right" />
+                <VHeader name="MAE" align="right" />
               </tr>
             </thead>
             <tbody>
@@ -76,10 +113,17 @@ export default function Validations() {
                       <Link
                         to={`/ticker/${encodeURIComponent(v.ticker)}`}
                         className="hover:text-accent"
+                        title={`Full ticker: ${v.ticker}`}
                       >
-                        {v.ticker}
+                        {parseTicker(v.ticker).display}
                       </Link>
                     )}
+                  </td>
+                  <td
+                    className="px-3 py-2 text-xs text-gray-400"
+                    title={v.ticker ? parseTicker(v.ticker).exchangeFull : ""}
+                  >
+                    {v.ticker ? parseTicker(v.ticker).exchange : "—"}
                   </td>
                   <td className="px-3 py-2 capitalize">{v.risk_profile}</td>
                   <td className="px-3 py-2 font-mono">{v.timeframe}</td>

@@ -26,8 +26,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.analysis.base import AnalysisContext, ModuleResult
-from app.synthesis.ollama_client import OllamaClient, OllamaError
-from app.synthesis.scorer import Candidate
+from app.synthesis.llm import LLMClient, get_llm_client
+from app.synthesis.scorer import (
+    DIRECTION_THRESHOLD,
+    MIN_CONFIDENCE,
+    Candidate,
+)
 
 log = logging.getLogger(__name__)
 
@@ -99,12 +103,12 @@ def generate_base_thesis(
     ctx: AnalysisContext,
     module_results: dict[str, ModuleResult],
     *,
-    client: OllamaClient | None = None,
+    client: LLMClient | None = None,
 ) -> BaseThesis:
-    """Call the LLM once for this ticker. Returns a structured thesis or a
-    degraded fallback if the LLM is unreachable / returns junk.
+    """Call the configured LLM once for this ticker. Returns a structured
+    thesis or a degraded fallback if the LLM is unreachable / returns junk.
     """
-    client = client or OllamaClient()
+    client = client or get_llm_client()
     user_prompt = _build_user_prompt(ctx, module_results)
     quality_overall = _aggregate_data_quality(module_results)
 
@@ -113,17 +117,30 @@ def generate_base_thesis(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             temperature=0.2,
-            max_tokens=900,
+            # Reasoning models (DeepSeek V4 Pro, gpt-5/o3, claude with extended
+            # thinking) charge reasoning tokens against max_tokens. A full
+            # structured rationale is ~500-800 output tokens; deep reasoning
+            # adds 1500-3000 more. 6144 leaves comfortable headroom so the
+            # JSON doesn't get truncated mid-string.
+            max_tokens=6144,
             seed=42,  # deterministic-ish for the same inputs
         )
-    except OllamaError as exc:
-        log.warning("Ollama unavailable for %s: %s — falling back to template", ctx.ticker, exc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("LLM unavailable for %s: %s — falling back to template", ctx.ticker, exc)
         return _template_fallback(ctx, module_results, quality=quality_overall, reason=str(exc))
 
     parsed = resp.parsed
     if not parsed:
-        log.warning("Ollama returned non-JSON for %s; falling back", ctx.ticker)
-        return _template_fallback(ctx, module_results, quality=quality_overall, reason="non-JSON response")
+        client_name = type(client).__name__
+        log.warning(
+            "%s returned non-JSON for %s (likely truncated mid-output — bump max_tokens if persistent); falling back",
+            client_name, ctx.ticker,
+        )
+        return _template_fallback(
+            ctx, module_results,
+            quality=quality_overall,
+            reason=f"{client_name} non-JSON response",
+        )
 
     return BaseThesis(
         ticker=ctx.ticker,
@@ -163,6 +180,29 @@ def adapt_thesis_for_cell(base: BaseThesis, candidate: Candidate) -> dict:
             "reason": _short_reason_for_module(c),
         })
 
+    # Full scoring breakdown — exposes the per-module math behind the call.
+    scoring_breakdown = {
+        "cell_score": candidate.cell_score,
+        "cell_confidence": candidate.cell_confidence,
+        "direction": candidate.direction,
+        "direction_threshold": DIRECTION_THRESHOLD,
+        "min_confidence": MIN_CONFIDENCE,
+        "filter_passed": candidate.filter_passed,
+        "filter_reason": candidate.filter_reason,
+        "contributors": [
+            {
+                "module": c["module"],
+                "score": c["score"],
+                "confidence": c["confidence"],
+                "cell_weight": c["cell_w"],
+                "horizon_weight": c["horizon_w"],
+                "contribution": c["weighted_contrib"],
+            }
+            for c in candidate.contributors
+        ],
+        "raw_module_scores": candidate.raw_module_scores,
+    }
+
     return {
         "headline": headline,
         "technical_case": base.technical_case,
@@ -174,6 +214,7 @@ def adapt_thesis_for_cell(base: BaseThesis, candidate: Candidate) -> dict:
         "invalidation_triggers": base.invalidation_triggers,
         "counter_argument": base.counter_argument,
         "confidence_drivers": confidence_drivers,
+        "scoring_breakdown": scoring_breakdown,
         "tax_notes": base.tax_notes,
         "data_quality": base.data_quality,
     }

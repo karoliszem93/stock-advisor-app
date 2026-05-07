@@ -25,10 +25,36 @@ logging.getLogger("yfinance").setLevel(logging.ERROR)
 log = logging.getLogger("app.main")
 
 
+def _clear_stale_runs() -> None:
+    """Mark any RunLog rows still in 'running' state at startup as failed.
+
+    These are leftovers from a previous backend that was killed mid-pipeline
+    before its except/finally block could update the status.
+    """
+    from datetime import datetime, timezone
+    from app.db import SessionLocal
+    from app.models import RunLog
+    from sqlalchemy import select
+
+    db = SessionLocal()
+    try:
+        stale = db.scalars(select(RunLog).where(RunLog.status == "running")).all()
+        for r in stale:
+            r.status = "failed"
+            r.finished_at = datetime.now(timezone.utc)
+            r.errors = {**(r.errors or {}), "startup_cleanup": "marked failed (process killed)"}
+        if stale:
+            db.commit()
+            log.info("Marked %d stale 'running' run(s) as failed at startup", len(stale))
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting stock-advisor backend v%s", __version__)
     init_db()
+    _clear_stale_runs()
     start_scheduler()
     try:
         yield

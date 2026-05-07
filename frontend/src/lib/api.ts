@@ -22,6 +22,30 @@ export interface HealthResponse {
   };
 }
 
+export interface ScoringContributor {
+  module: string;
+  score: number;
+  confidence: number;
+  cell_weight: number;
+  horizon_weight: number;
+  contribution: number;
+}
+
+export interface ScoringBreakdown {
+  cell_score: number;
+  cell_confidence: number;
+  direction: Direction;
+  direction_threshold: number;
+  min_confidence: number;
+  filter_passed: boolean;
+  filter_reason: string | null;
+  contributors: ScoringContributor[];
+  raw_module_scores?: Record<
+    string,
+    { score: number | null; direction: string; confidence: number; data_quality: string }
+  >;
+}
+
 export interface Rationale {
   headline?: string;
   technical_case?: string;
@@ -33,6 +57,7 @@ export interface Rationale {
   invalidation_triggers?: string[];
   counter_argument?: string;
   confidence_drivers?: { factor: string; delta: number; reason: string }[];
+  scoring_breakdown?: ScoringBreakdown;
   tax_notes?: string;
   data_quality?: "full" | "degraded" | "missing";
   price_notes?: string[];
@@ -66,6 +91,19 @@ export interface SuggestionDetail extends Suggestion {
 export interface WatchlistItem {
   ticker: string;
   note: string | null;
+}
+
+export interface TickerValidation {
+  valid: boolean;
+  ticker: string;
+  name?: string;
+  exchange?: string;
+  currency?: string;
+  asset_type?: "equity" | "etf";
+  last_close?: number | null;
+  error?: string;
+  suggestions?: string[];
+  warning?: string;
 }
 
 export interface ProviderStatus {
@@ -176,11 +214,25 @@ export const api = {
 
   watchlist: {
     list: () => request<WatchlistItem[]>("/api/watchlist/"),
-    add: (ticker: string, note?: string) =>
-      request<WatchlistItem>("/api/watchlist/", {
+    add: async (ticker: string, note?: string) => {
+      // Use raw fetch so we can read the FastAPI 422/400 body shape on validation failures.
+      const r = await fetch("/api/watchlist/", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ticker, note }),
-      }),
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        const detail = body?.detail ?? body;
+        throw Object.assign(new Error(detail?.message ?? `${r.status}`), {
+          status: r.status,
+          detail,
+        });
+      }
+      return body as TickerValidation & { note: string | null };
+    },
+    validate: (ticker: string) =>
+      request<TickerValidation>(`/api/watchlist/validate/${encodeURIComponent(ticker)}`),
     remove: (ticker: string) =>
       request<{ removed: string }>(`/api/watchlist/${ticker}`, { method: "DELETE" }),
   },
@@ -203,4 +255,9 @@ export const api = {
     request<{ triggered: string }>("/api/run/daily", { method: "POST" }),
   triggerValidation: () =>
     request<{ triggered: string }>("/api/run/validate", { method: "POST" }),
+  triggerTickerRun: (ticker: string) =>
+    request<{ triggered: string; ticker: string }>(
+      `/api/run/ticker/${encodeURIComponent(ticker)}`,
+      { method: "POST" },
+    ),
 };

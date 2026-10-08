@@ -25,6 +25,7 @@ from app.config import get_settings
 from app.models import Suggestion, SuggestionValidation
 from app.providers.registry import get_provider
 from app.validation.outcome import compute_outcome, filter_window
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def sweep_due_validations(db: Session, *, today: date | None = None) -> SweepSum
     try:
         macro_bundle = fred.get_macro_bundle() if fred.is_available() else None
     except Exception as exc:  # noqa: BLE001
-        summary.errors["fred"] = repr(exc)[:200]
+        summary.errors["fred"] = redact_exc(exc, 200)
 
     # We need rolling FX context. For simplicity v1: use current (most-recent)
     # rate as both entry and exit FX. A future iteration can fetch the precise
@@ -103,7 +104,7 @@ def sweep_due_validations(db: Session, *, today: date | None = None) -> SweepSum
             summary.validated += 1
         except Exception as exc:  # noqa: BLE001
             log.exception("validation failed for suggestion %s", sug.id)
-            summary.errors[f"sug_{sug.id}"] = repr(exc)[:200]
+            summary.errors[f"sug_{sug.id}"] = redact_exc(exc, 200)
 
     db.commit()
     log.info("validation sweep: %d validated, %d skipped, %d errors",

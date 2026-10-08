@@ -8,6 +8,7 @@ import logging
 from functools import lru_cache
 
 from app.analysis.base import AnalysisContext, BaseAnalysisModule, ModuleResult
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ def analyze_ticker(ctx: AnalysisContext) -> dict[str, ModuleResult]:
                 direction="neutral",
                 confidence=0.0,
                 data_quality="missing",
-                errors=[repr(exc)],
+                errors=[redact_exc(exc)],
                 notes=[f"Module crashed: {exc!r}"],
             )
     return results

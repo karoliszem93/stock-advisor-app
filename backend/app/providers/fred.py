@@ -23,6 +23,7 @@ from datetime import date, timedelta
 
 from app.config import get_settings
 from app.providers.base import BaseProvider
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -91,5 +92,5 @@ class FredProvider(BaseProvider):
                     }
             except Exception as exc:  # noqa: BLE001
                 log.debug("FRED %s failed: %s", sid, exc)
-                out[sid] = {"error": repr(exc)}
+                out[sid] = {"error": redact_exc(exc)}
         return out

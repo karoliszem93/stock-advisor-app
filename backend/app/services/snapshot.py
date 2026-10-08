@@ -23,6 +23,7 @@ from datetime import date
 from app.analysis.base import AnalysisContext
 from app.providers.registry import get_provider
 from app.services.universe import UniverseEntry
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ def _safe(errors: dict, key: str, fn):
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001
-        errors[key] = repr(exc)[:200]
+        errors[key] = redact_exc(exc, 200)
         log.debug("snapshot %s failed: %s", key, exc)
         return None
 

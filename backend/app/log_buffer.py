@@ -13,6 +13,8 @@ import threading
 from collections import deque
 from datetime import datetime, timezone
 
+from app.redact import redact
+
 MAX_RECORDS = 2000
 
 # Request logs from the UI's own polling would drown everything else out.
@@ -37,7 +39,7 @@ class RingBufferHandler(logging.Handler):
                 "ts": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
-                "msg": msg[:1000],
+                "msg": redact(msg)[:1000],
             }
         except Exception:  # noqa: BLE001
             self.handleError(record)

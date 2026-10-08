@@ -21,6 +21,7 @@ from app.services.data_publisher import publish
 from app.validation.calibration import maybe_recalibrate
 from app.validation.recalibration import recalibrate_cell_weights
 from app.validation.sweep import sweep_due_validations
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ async def run_validation_sweep() -> None:
         if run is not None:
             run.status = "failed"
             run.finished_at = datetime.now(timezone.utc)
-            run.errors = {"sweep": repr(exc)[:300]}
+            run.errors = {"sweep": redact_exc(exc, 300)}
             db.commit()
     finally:
         db.close()

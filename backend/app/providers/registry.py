@@ -15,6 +15,7 @@ import logging
 from functools import lru_cache
 
 from app.providers.base import BaseProvider
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -65,5 +66,5 @@ def provider_status() -> list[dict]:
         try:
             out.append(_registry()[name].status())
         except Exception as exc:  # noqa: BLE001
-            out.append({"name": name, "error": repr(exc), "available": False})
+            out.append({"name": name, "error": redact_exc(exc), "available": False})
     return out

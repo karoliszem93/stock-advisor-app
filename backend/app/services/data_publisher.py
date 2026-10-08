@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import get_settings
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +139,6 @@ def publish(reason: str = "scheduled") -> dict:
         result["error"] = (exc.stderr or str(exc)).strip()[:500]
         log.error("Data publish failed: %s", result["error"])
     except Exception as exc:  # noqa: BLE001
-        result["error"] = repr(exc)[:500]
+        result["error"] = redact_exc(exc, 500)
         log.exception("Data publish failed: %s", exc)
     return result

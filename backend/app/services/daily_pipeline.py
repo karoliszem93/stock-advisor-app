@@ -24,6 +24,7 @@ from app.db import SessionLocal
 from app.models import RunLog
 from app.services.data_publisher import publish
 from app.synthesis.orchestrator import generate_suggestions
+from app.redact import redact_exc
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ async def run_daily_pipeline() -> None:
         if run is not None:
             run.status = "failed"
             run.finished_at = datetime.now(timezone.utc)
-            run.errors = {"pipeline": repr(exc)[:300]}
+            run.errors = {"pipeline": redact_exc(exc, 300)}
             db.commit()
     finally:
         db.close()

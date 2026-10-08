@@ -12,14 +12,16 @@ from app import __version__
 from app.config import get_settings
 from app.db import init_db
 from app.log_buffer import install as install_log_buffer
+from app.redact import RedactingFormatter
 from app.routes import health, logs, providers, run, runs, suggestions, validations, watchlist
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.data_publisher import restore_db_if_missing
 
-logging.basicConfig(
-    level=get_settings().log_level,
-    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-)
+_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+logging.basicConfig(level=get_settings().log_level, format=_LOG_FORMAT)
+# API keys travel in provider URLs, which show up in HTTP error messages.
+for _h in logging.getLogger().handlers:
+    _h.setFormatter(RedactingFormatter(_LOG_FORMAT))
 # Silence successful-HTTP request logs from httpx — they drown out the
 # pipeline's own progress lines. Errors still surface from each provider.
 logging.getLogger("httpx").setLevel(logging.WARNING)

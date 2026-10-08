@@ -12,6 +12,7 @@ import httpx
 from app.config import get_settings
 from app.providers.cache import FileCache
 from app.providers.rate_limiter import RateLimiter, RateLimitError
+from app.redact import redact_exc
 
 log = logging.getLogger("app.providers")
 
@@ -120,7 +121,7 @@ class BaseProvider(ABC):
         try:
             out["available"] = self.is_available()
         except Exception as exc:  # noqa: BLE001
-            out["error"] = repr(exc)
+            out["error"] = redact_exc(exc)
 
         key_field = self.required_key_setting()
         if key_field:

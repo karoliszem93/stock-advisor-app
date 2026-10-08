@@ -16,6 +16,13 @@ export default function RunBanner() {
     refresh();
   }, []);
 
+  // While a run is in progress, keep polling so the banner flips to the result.
+  useEffect(() => {
+    if (run?.status !== "running") return;
+    const id = setInterval(refresh, 15_000);
+    return () => clearInterval(id);
+  }, [run?.status]);
+
   function refresh() {
     api.runs.latest("daily_pipeline").then(setRun).catch(() => setRun(null));
   }

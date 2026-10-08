@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.config import get_settings
 from app.db import init_db
-from app.routes import health, providers, run, runs, suggestions, validations, watchlist
+from app.log_buffer import install as install_log_buffer
+from app.routes import health, logs, providers, run, runs, suggestions, validations, watchlist
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.data_publisher import restore_db_if_missing
 
@@ -24,6 +25,7 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 log = logging.getLogger("app.main")
+install_log_buffer()
 
 
 def _clear_stale_runs() -> None:
@@ -89,3 +91,4 @@ app.include_router(watchlist.router, prefix="/api/watchlist", tags=["watchlist"]
 app.include_router(run.router, prefix="/api/run", tags=["run"])
 app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
+app.include_router(logs.router, prefix="/api/logs", tags=["logs"])

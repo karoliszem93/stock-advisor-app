@@ -114,7 +114,8 @@ def generate_suggestions(
 
     # ---- 1. Snapshot + analysis per ticker ----
     analyses: dict[str, tuple[AnalysisContext, dict[str, ModuleResult]]] = {}
-    for entry in universe:
+    for i, entry in enumerate(universe, 1):
+        log.info("Analyzing (%d/%d) — %s", i, len(universe), entry.ticker)
         try:
             ctx = build_ticker_context(
                 entry, snapshot_date, macro=macro, benchmark_ohlcv=benchmark_ohlcv,

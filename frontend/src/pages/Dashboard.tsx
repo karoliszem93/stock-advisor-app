@@ -8,6 +8,7 @@ import {
   type Suggestion,
   type Timeframe,
 } from "../lib/api";
+import LiveLog from "../components/LiveLog";
 import RunBanner from "../components/RunBanner";
 import SuggestionTable from "../components/SuggestionTable";
 
@@ -64,6 +65,7 @@ export default function Dashboard() {
       </header>
 
       <RunBanner />
+      <LiveLog />
 
       {error && (
         <div className="mb-4 rounded border border-danger/40 bg-danger/10 p-3 text-sm">

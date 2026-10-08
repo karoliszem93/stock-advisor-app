@@ -178,6 +178,14 @@ export interface RunLog {
   errors: Record<string, string> | null;
 }
 
+export interface LogLine {
+  id: number;
+  ts: string;
+  level: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
+  logger: string;
+  msg: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     ...init,
@@ -250,6 +258,9 @@ export const api = {
     latest: (run_type = "daily_pipeline") =>
       request<RunLog | null>(`/api/runs/latest${qs({ run_type })}`),
   },
+
+  logs: (after = 0) =>
+    request<{ lines: LogLine[]; last_id: number }>(`/api/logs/${qs({ after })}`),
 
   triggerDailyRun: () =>
     request<{ triggered: string }>("/api/run/daily", { method: "POST" }),

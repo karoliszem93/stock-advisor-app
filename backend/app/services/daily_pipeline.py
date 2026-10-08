@@ -51,7 +51,8 @@ async def run_daily_pipeline() -> None:
         db.commit()
         db.refresh(run)
 
-        summary = generate_suggestions(snapshot_date, db)
+        # Run in a worker thread so the API/UI stays responsive during the run.
+        summary = await asyncio.to_thread(generate_suggestions, snapshot_date, db)
 
         run.status = "ok" if summary.suggestions_created else "partial"
         run.finished_at = datetime.now(timezone.utc)

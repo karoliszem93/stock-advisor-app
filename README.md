@@ -126,6 +126,8 @@ Frontend proxies `/api/*` to `localhost:8000`.
 
 The scheduler triggers at **08:00 Europe/Vilnius, Monday–Friday**. At that time, US markets have closed the previous evening and EU/UK markets haven't opened — fresh data, actionable timing.
 
+If the machine is off or asleep at 08:00, the run happens as soon as it's back: the backend checks at startup and every 15 minutes. On a weekday after 08:00, it starts whatever hasn't completed yet today, validation sweep first and then the daily pipeline. Failed runs are retried, up to 3 attempts per day. With Docker Desktop set to start at login and the containers on `restart: unless-stopped`, turning the computer on is enough.
+
 You can trigger a run manually from the UI or via:
 ```bash
 curl -X POST http://localhost:8000/api/run/daily

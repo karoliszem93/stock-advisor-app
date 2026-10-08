@@ -116,7 +116,9 @@ class YFinanceProvider(BaseProvider):
             if ser is None or ser.empty:
                 return []
             cutoff = datetime.now() - timedelta(days=365 * years)
-            ser = ser[ser.index >= cutoff]
+            # yfinance returns an exchange-tz-aware index; compare on naive wall time
+            idx = ser.index.tz_localize(None) if ser.index.tz is not None else ser.index
+            ser = ser[idx >= cutoff]
             return [{"date": idx.date().isoformat(), "amount": float(v)} for idx, v in ser.items()]
 
         return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)

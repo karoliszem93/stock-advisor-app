@@ -42,13 +42,14 @@ async def run_validation_sweep() -> None:
         db.refresh(run)
 
         # 1. Score due suggestions
-        sweep_summary = sweep_due_validations(db)
+        # Worker threads keep the API/UI responsive during the sweep.
+        sweep_summary = await asyncio.to_thread(sweep_due_validations, db)
 
         # 2. Calibration (only kicks in at >= MIN_VALIDATIONS_FOR_CALIBRATION)
-        calibration_model = maybe_recalibrate(db)
+        calibration_model = await asyncio.to_thread(maybe_recalibrate, db)
 
         # 3. Per-cell weight recalibration
-        recalibrations = recalibrate_cell_weights(db)
+        recalibrations = await asyncio.to_thread(recalibrate_cell_weights, db)
 
         run.status = "ok" if sweep_summary.errors == {} else "partial"
         run.finished_at = datetime.now(timezone.utc)

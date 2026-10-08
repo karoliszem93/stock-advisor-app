@@ -13,6 +13,11 @@ data-repo manifest) can mark suggestions as data-degraded.
 Fundamentals unification: FMP is preferred (richest fields, 250/day free).
 Alpha Vantage and EDGAR are fallbacks. The unified shape is what the
 fundamental_equity + quality modules consume.
+
+Non-US listings (London/Xetra ETFs, European equities): the free tiers of
+Finnhub, FMP, Alpha Vantage and EDGAR only cover US symbols and reject these
+outright, so we don't call them. Instead news comes from Google News (+ NewsAPI
+for equities), and fundamentals / earnings dates from Yahoo.
 """
 
 from __future__ import annotations
@@ -22,10 +27,66 @@ from datetime import date
 
 from app.analysis.base import AnalysisContext
 from app.providers.registry import get_provider
-from app.services.universe import UniverseEntry
 from app.redact import redact_exc
+from app.services.universe import UniverseEntry
 
 log = logging.getLogger(__name__)
+
+# Yahoo exchange suffixes for non-US listings ("VUSA.L", "BNP.PA", "VWCE.DE").
+# Single-letter US share classes like "BRK.B" are deliberately not listed.
+_NON_US_SUFFIXES = {
+    "L", "IL", "PA", "DE", "F", "AS", "MI", "MC", "SW", "VI", "BR", "LS", "HE",
+    "ST", "CO", "OL", "IR", "WA", "PR", "AT", "TO", "V", "NE", "AX", "NZ", "HK",
+    "T", "KS", "KQ", "SS", "SZ", "TW", "SI", "NS", "BO", "SA", "MX", "JO",
+}
+
+# News for an ETF is really news about what it holds — search by exposure.
+_ETF_NEWS_QUERIES = {
+    "global_developed_em": '"global stocks" OR "world stocks"',
+    "global_developed": '"global stocks" OR "MSCI World"',
+    "us_large_cap": '"S&P 500"',
+    "us_tech": '"Nasdaq 100" OR "Nasdaq-100"',
+    "global_dividend": '"dividend stocks"',
+    "emerging_markets": '"emerging markets" stocks',
+    "europe_developed": '"European stocks" OR "Stoxx 600"',
+    "japan": '"Japanese stocks" OR Nikkei OR Topix',
+    "bonds_global": '"bond market" OR "global bonds"',
+    "commodities_gold": '"gold price"',
+    "factor_quality": '"quality stocks" OR "quality factor"',
+    "factor_value": '"value stocks"',
+    "factor_momentum": '"momentum stocks"',
+    "factor_low_vol": '"low volatility" stocks',
+    "us_sector_tech": '"tech stocks"',
+    "us_sector_financials": '"bank stocks" OR "financial stocks"',
+    "us_sector_health": '"healthcare stocks"',
+    "us_sector_energy": '"energy stocks" OR "oil prices"',
+    "us_sector_staples": '"consumer staples"',
+    "us_sector_discretionary": '"consumer discretionary" OR "retail stocks"',
+    "bonds_us_treasury": '"Treasury yields"',
+    "bonds_eu_govt": '"Bund yields" OR "euro zone bonds"',
+    "bonds_eu_corp": '"corporate bonds" Europe',
+    "thematic_clean_energy": '"clean energy" stocks',
+    "thematic_automation": 'robotics OR automation stocks',
+    "thematic_ev": '"electric vehicle" stocks',
+}
+
+
+def is_us_listed(ticker: str) -> bool:
+    return "." not in ticker or ticker.rsplit(".", 1)[1].upper() not in _NON_US_SUFFIXES
+
+
+def _news_query(entry: UniverseEntry, asset_type: str, info: dict | None) -> str | None:
+    if asset_type == "etf":
+        q = _ETF_NEWS_QUERIES.get((entry.metadata or {}).get("category", ""))
+        if q:
+            return q
+    name = (info or {}).get("long_name") or (entry.metadata or {}).get("name")
+    if not name:
+        return None
+    # "Vanguard S&P 500 UCITS ETF (Distributing)" -> "Vanguard S&P 500"
+    for cut in (" UCITS", " ETF", " ("):
+        name = name.split(cut)[0]
+    return f'"{name.strip()}"'
 
 
 # ---------------------------------------------------------------------------
@@ -77,20 +138,34 @@ def build_ticker_context(
         asset_type = "etf"
 
     # ---- ETF-specific block ----
+    us = is_us_listed(ticker)
     etf_info = None
-    if asset_type == "etf":
+    if asset_type == "etf" and us:
         etf_info = _safe(errors, "fmp.etf_info", lambda: get_provider("fmp").get_etf_info(ticker))
 
     # ---- fundamentals (equities only) ----
     fundamentals = None
     if asset_type == "equity":
-        fundamentals = _build_unified_fundamentals(ticker, errors)
+        fundamentals = (
+            _build_unified_fundamentals(ticker, errors) if us
+            else _build_yahoo_fundamentals(ticker, errors)
+        )
 
     # ---- news ----
     news: list[dict] = []
-    fh_news = _safe(errors, "finnhub.news", lambda: get_provider("finnhub").get_company_news(ticker, days=14))
-    if fh_news:
-        news.extend(fh_news)
+    if us:
+        fh_news = _safe(errors, "finnhub.news", lambda: get_provider("finnhub").get_company_news(ticker, days=14))
+        news.extend(fh_news or [])
+    else:
+        query = _news_query(entry, asset_type, info)
+        if query:
+            news.extend(_safe(errors, "googlenews", lambda: get_provider("googlenews").search(query)) or [])
+            newsapi = get_provider("newsapi")
+            # NewsAPI's free tier is 100/day — spend it on single stocks, not ETF themes
+            if asset_type == "equity" and newsapi.is_available():
+                articles = _safe(errors, "newsapi", lambda: newsapi.search_everything(query, days=14)) or []
+                seen = {n["headline"].lower() for n in news}
+                news.extend(a for a in articles if (a.get("title") or "").lower() not in seen)
     # Finnhub aggregate sentiment is a paid endpoint — always 403 on free tier.
     # We rely on the news_sentiment module's keyword polarity over the headlines instead.
     sentiment_score = None
@@ -102,11 +177,18 @@ def build_ticker_context(
         social = _safe(errors, "reddit.search", lambda: reddit.search_ticker(ticker)) or []
 
     # ---- insider ----
-    insider = _build_insider_summary(ticker, errors) if asset_type == "equity" else None
+    # EDGAR / Finnhub insider data only exists for US issuers
+    insider = _build_insider_summary(ticker, errors) if asset_type == "equity" and us else None
 
     # ---- upcoming events ----
-    earnings = _safe(errors, "finnhub.earnings_cal",
-                     lambda: get_provider("finnhub").get_earnings_calendar(ticker, days_ahead=120))
+    if us:
+        earnings = _safe(errors, "finnhub.earnings_cal",
+                         lambda: get_provider("finnhub").get_earnings_calendar(ticker, days_ahead=120))
+    elif asset_type == "equity":
+        earnings = _safe(errors, "yfinance.earnings",
+                         lambda: get_provider("yfinance").get_earnings_dates(ticker))
+    else:
+        earnings = None  # ETFs don't report earnings
     upcoming_events = {
         "earnings": [
             {"date": e.get("date"), "estimate": e.get("epsEstimate"), "fiscal_period": e.get("quarter")}
@@ -211,6 +293,26 @@ def _build_unified_fundamentals(ticker: str, errors: dict) -> dict | None:
         "balance_sheet_periods": fmp_balance or [],
         "cash_flow_periods": fmp_cashflow or [],
         "source": "fmp" if fmp_ratios else "alphavantage",
+    }
+
+
+def _build_yahoo_fundamentals(ticker: str, errors: dict) -> dict | None:
+    """TTM ratios from Yahoo for listings the free fundamentals APIs don't cover.
+
+    No multi-year statements, so growth and the statement-based quality
+    checks stay empty (those modules report partial data).
+    """
+    ratios = _safe(errors, "yfinance.ratios", lambda: get_provider("yfinance").get_key_ratios(ticker))
+    if not ratios or not any(v is not None for v in ratios.values()):
+        return None
+    return {
+        "ttm": ratios,
+        "growth": {},
+        "earnings_history": [],
+        "income_periods": [],
+        "balance_sheet_periods": [],
+        "cash_flow_periods": [],
+        "source": "yahoo",
     }
 
 

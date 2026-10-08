@@ -30,6 +30,7 @@ def _registry() -> dict[str, BaseProvider]:
     from app.providers.finnhub import FinnhubProvider
     from app.providers.fmp import FmpProvider
     from app.providers.fred import FredProvider
+    from app.providers.google_news import GoogleNewsProvider
     from app.providers.newsapi import NewsApiProvider
     from app.providers.reddit import RedditProvider
     from app.providers.simfin import SimFinProvider
@@ -44,6 +45,7 @@ def _registry() -> dict[str, BaseProvider]:
         FmpProvider(),
         SimFinProvider(),
         NewsApiProvider(),
+        GoogleNewsProvider(),
         RedditProvider(),
     ]
     return {p.name: p for p in instances}

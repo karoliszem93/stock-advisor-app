@@ -106,6 +106,53 @@ class YFinanceProvider(BaseProvider):
 
         return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
 
+    def get_key_ratios(self, ticker: str) -> dict | None:
+        """TTM valuation / profitability ratios from Yahoo's quote summary.
+
+        Fallback fundamentals for listings FMP / Alpha Vantage free tiers don't
+        cover (e.g. European equities). Ratios are decimals; Yahoo's
+        debtToEquity is a percentage and is converted.
+        """
+        cache_key = f"ratios:{ticker.upper()}"
+
+        def _fetch():
+            info = dict(yf.Ticker(ticker).get_info() or {})
+            if not info:
+                return None
+            de = _num(info.get("debtToEquity"))
+            fcf, mcap = _num(info.get("freeCashflow")), _num(info.get("marketCap"))
+            gross = _num(info.get("grossMargins"))
+            return {
+                "pe": _num(info.get("trailingPE")),
+                "pb": _num(info.get("priceToBook")),
+                "ps": _num(info.get("priceToSalesTrailing12Months")),
+                "peg": _num(info.get("trailingPegRatio") or info.get("pegRatio")),
+                "ev_ebitda": _num(info.get("enterpriseToEbitda")),
+                "debt_to_equity": de / 100 if de is not None else None,
+                "roe": _num(info.get("returnOnEquity")),
+                # banks/insurers report 0 gross margin — treat as unknown
+                "gross_margin": gross or None,
+                "op_margin": _num(info.get("operatingMargins")),
+                "net_margin": _num(info.get("profitMargins")),
+                "fcf_yield": fcf / mcap if fcf is not None and mcap else None,
+            }
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
+
+    def get_earnings_dates(self, ticker: str) -> list[dict] | None:
+        """Upcoming earnings dates from Yahoo's calendar (works for non-US listings)."""
+        cache_key = f"earnings_dates:{ticker.upper()}"
+
+        def _fetch():
+            cal = yf.Ticker(ticker).calendar or {}
+            dates = cal.get("Earnings Date") or []
+            return [
+                {"date": d.isoformat(), "epsEstimate": _num(cal.get("Earnings Average")), "quarter": None}
+                for d in dates if d >= date.today()
+            ]
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
+
     def get_dividends(self, ticker: str, years: int = 5) -> list[dict] | None:
         """Historical dividend payments. Used for tax-aware return splits."""
         cache_key = f"dividends:{ticker.upper()}:{years}"

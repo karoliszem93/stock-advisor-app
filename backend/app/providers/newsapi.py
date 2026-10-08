@@ -41,7 +41,16 @@ class NewsApiProvider(BaseProvider):
             return None
         full_params = dict(params)
         full_params["apiKey"] = s.newsapi_api_key
-        return self.http_get_json(f"{self.BASE}{path}", params=full_params)
+        resp = self.client.get(f"{self.BASE}{path}", params=full_params)
+        if resp.is_error:
+            # NewsAPI explains rejections (rate limit, plan limits) in the body
+            try:
+                body = resp.json()
+                reason = f"{body.get('code')}: {body.get('message')}"
+            except ValueError:
+                reason = resp.text[:200]
+            raise RuntimeError(f"NewsAPI {resp.status_code} — {reason}")
+        return resp.json()
 
     # ------------------------------------------------------------------
     def search_everything(self, query: str, days: int = 7, language: str = "en") -> list[dict] | None:

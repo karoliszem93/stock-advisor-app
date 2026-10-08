@@ -8,6 +8,7 @@ import logging
 from fastapi import APIRouter
 
 from app.services.daily_pipeline import run_daily_pipeline
+from app.services.data_publisher import publish
 from app.services.ticker_pipeline import run_ticker_pipeline
 from app.services.validation_pipeline import run_validation_sweep
 
@@ -40,3 +41,10 @@ async def trigger_ticker(ticker: str) -> dict:
     log.info("Manual trigger: ticker_pipeline for %s", t)
     asyncio.create_task(run_ticker_pipeline(t))
     return {"triggered": "ticker_pipeline", "ticker": t}
+
+
+@router.post("/publish")
+async def trigger_publish() -> dict:
+    """Export the DB to the data repo, commit, and push to GitHub now."""
+    log.info("Manual trigger: data publish")
+    return await asyncio.to_thread(publish, "manual")

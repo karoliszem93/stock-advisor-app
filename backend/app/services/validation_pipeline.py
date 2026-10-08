@@ -11,11 +11,13 @@ results.json + aggregate_performance.json into the data repo.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
 from app.db import SessionLocal
 from app.models import RunLog
+from app.services.data_publisher import publish
 from app.validation.calibration import maybe_recalibrate
 from app.validation.recalibration import recalibrate_cell_weights
 from app.validation.sweep import sweep_due_validations
@@ -87,3 +89,4 @@ async def run_validation_sweep() -> None:
             db.commit()
     finally:
         db.close()
+        await asyncio.to_thread(publish, "validation_sweep")

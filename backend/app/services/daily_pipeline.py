@@ -8,13 +8,13 @@ Wired through Phase 3:
   - generate base thesis via Ollama (one per unique ticker)
   - persist Suggestion rows to SQLite
 
-Pending Phase 6: pushing the daily snapshots/suggestions/analysis JSON
-files into the stock-advisor-data repo. For now everything lives in the
-local SQLite DB and can be inspected via the API or the frontend.
+After each run the SQLite DB is exported to the stock-advisor-data repo
+and pushed to GitHub (see app.services.data_publisher).
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import RunLog
+from app.services.data_publisher import publish
 from app.synthesis.orchestrator import generate_suggestions
 
 log = logging.getLogger(__name__)
@@ -80,3 +81,4 @@ async def run_daily_pipeline() -> None:
             db.commit()
     finally:
         db.close()
+        await asyncio.to_thread(publish, "daily_pipeline")

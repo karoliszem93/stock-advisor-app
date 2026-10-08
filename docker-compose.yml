@@ -1,0 +1,45 @@
+# stock-advisor — run the whole app in Docker.
+#
+# Expects the data repo cloned next to this one:
+#   STOCK/
+#   ├── stock-advisor-app/    (this repo)
+#   └── stock-advisor-data/
+#
+# Local data (bind mounts, survives rebuilds):
+#   ./backend/data        → SQLite DB + provider cache
+#   ../stock-advisor-data → data repo; DB dump is committed + pushed here
+#
+# Usage: docker compose up -d --build   → http://localhost:5173
+
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      # Container paths override the host-relative ones in .env
+      SQLITE_PATH: /app/data/stock-advisor.db
+      DATA_REPO_PATH: /data-repo
+      GITHUB_TOKEN_FILE: /run/secrets/github_token
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+    volumes:
+      - ./backend/data:/app/data
+      - ${DATA_REPO_DIR:-../stock-advisor-data}:/data-repo
+    secrets:
+      - github_token
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped
+
+secrets:
+  github_token:
+    file: ${GITHUB_TOKEN_FILE:-${HOME}/.config/stock-advisor/github_token}

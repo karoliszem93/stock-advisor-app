@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.db import init_db
 from app.routes import health, providers, run, runs, suggestions, validations, watchlist
 from app.scheduler import shutdown_scheduler, start_scheduler
+from app.services.data_publisher import restore_db_if_missing
 
 logging.basicConfig(
     level=get_settings().log_level,
@@ -53,6 +54,7 @@ def _clear_stale_runs() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting stock-advisor backend v%s", __version__)
+    restore_db_if_missing()
     init_db()
     _clear_stale_runs()
     start_scheduler()

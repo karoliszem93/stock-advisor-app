@@ -1,4 +1,4 @@
-.PHONY: help install backend frontend dev test lint clean
+.PHONY: help install backend frontend dev test lint clean up down logs publish
 
 help:
 	@echo "Targets:"
@@ -9,6 +9,10 @@ help:
 	@echo "  test      Run backend tests"
 	@echo "  lint      Run ruff on backend"
 	@echo "  clean     Remove caches"
+	@echo "  up        Build + start the app in Docker (http://localhost:5173)"
+	@echo "  down      Stop the Docker containers"
+	@echo "  logs      Tail backend logs"
+	@echo "  publish   Export DB to the data repo and push to GitHub now"
 
 install:
 	cd backend && python -m venv .venv && . .venv/bin/activate && pip install -e .[dev]
@@ -33,3 +37,15 @@ clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -prune -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .ruff_cache -prune -exec rm -rf {} + 2>/dev/null || true
+
+up:
+	docker compose up -d --build
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs -f backend
+
+publish:
+	curl -s -X POST http://localhost:8000/api/run/publish

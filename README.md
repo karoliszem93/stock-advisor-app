@@ -64,6 +64,36 @@ stock-advisor-app/
     └── vite.config.ts
 ```
 
+## Run with Docker (recommended)
+
+Runs the backend and the built frontend in containers. On a new machine you need Docker, both repos cloned side by side, and your secrets:
+
+```bash
+mkdir STOCK && cd STOCK
+git clone https://github.com/karoliszem93/stock-advisor-app.git
+git clone https://github.com/karoliszem93/stock-advisor-data.git
+cd stock-advisor-app
+cp backend/.env.example backend/.env      # fill in API keys
+# GitHub PAT (write access to stock-advisor-data):
+mkdir -p ~/.config/stock-advisor && echo "<PAT>" > ~/.config/stock-advisor/github_token
+make up                                   # → http://localhost:5173
+```
+
+Optional overrides (shell env or a `.env` file next to `docker-compose.yml`): `DATA_REPO_DIR`, `GITHUB_TOKEN_FILE`, `OLLAMA_HOST` (defaults to the Ollama on the host machine).
+
+### Where data lives
+
+| What | Local (host) | GitHub |
+|---|---|---|
+| Working SQLite DB | `backend/data/stock-advisor.db` | dumped to `stock-advisor-data/db/stock-advisor.sql` |
+| Provider cache | `backend/data/cache/` | not published (re-fetchable) |
+| Weights history etc. | `../stock-advisor-data/` | committed as-is |
+| API keys / PAT | `backend/.env`, `~/.config/stock-advisor/` | **never** |
+
+After every daily pipeline and validation sweep the backend exports the DB as a SQL dump into the data repo, commits, and pushes. Trigger it manually with `make publish` (or `POST /api/run/publish`). If the push fails, the commit stays local and goes out with the next publish.
+
+When the backend starts and `backend/data/stock-advisor.db` doesn't exist, it rebuilds the DB from the dump. So a fresh clone of both repos gets the full history back.
+
 ## Quick start (development)
 
 ### Prerequisites

@@ -27,9 +27,12 @@ def _registry() -> dict[str, BaseProvider]:
     """
     from app.providers.alphavantage import AlphaVantageProvider
     from app.providers.edgar import EdgarProvider
+    from app.providers.euromacro import EuroMacroProvider
     from app.providers.finnhub import FinnhubProvider
+    from app.providers.finra import FinraProvider
     from app.providers.fmp import FmpProvider
     from app.providers.fred import FredProvider
+    from app.providers.gdelt import GdeltProvider
     from app.providers.google_news import GoogleNewsProvider
     from app.providers.newsapi import NewsApiProvider
     from app.providers.reddit import RedditProvider
@@ -46,6 +49,9 @@ def _registry() -> dict[str, BaseProvider]:
         SimFinProvider(),
         NewsApiProvider(),
         GoogleNewsProvider(),
+        GdeltProvider(),
+        EuroMacroProvider(),
+        FinraProvider(),
         RedditProvider(),
     ]
     return {p.name: p for p in instances}

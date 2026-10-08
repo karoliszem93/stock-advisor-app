@@ -139,6 +139,32 @@ class FundamentalEquityModule(BaseAnalysisModule):
             elif beats <= 1:
                 s -= 0.05
 
+        # ---- Analyst consensus (Yahoo) ----
+        analyst = f.get("analyst") or {}
+        target = analyst.get("price_target") or {}
+        upside = None
+        if target.get("mean") and target.get("current"):
+            upside = target["mean"] / target["current"] - 1
+            if upside > 0.20:
+                s += 0.08
+                notes.append(f"Analyst mean target {upside * 100:+.0f}% above price.")
+            elif upside < -0.05:
+                s -= 0.08
+                notes.append(f"Analyst mean target {upside * 100:+.0f}% vs price — below current.")
+        recs = analyst.get("recommendations") or {}
+        n_recs = sum(recs.values())
+        rec_score = None
+        if n_recs >= 3:
+            # +1 = all strong buy, -1 = all strong sell
+            rec_score = (2 * recs.get("strongBuy", 0) + recs.get("buy", 0)
+                         - recs.get("sell", 0) - 2 * recs.get("strongSell", 0)) / (2 * n_recs)
+            if rec_score > 0.5:
+                s += 0.05
+                notes.append(f"Analysts strongly positive ({n_recs} ratings).")
+            elif rec_score < 0:
+                s -= 0.05
+                notes.append(f"Analysts net negative ({n_recs} ratings).")
+
         score = clamp(s)
         # Confidence scales with data coverage
         coverage_score = sum(1 for v in (pe, roe, rev_3y, debt_to_equity) if v is not None)
@@ -154,6 +180,9 @@ class FundamentalEquityModule(BaseAnalysisModule):
                 "ttm": ttm,
                 "growth": growth,
                 "earnings_beats_last_4": beats,
+                "analyst_upside": upside,
+                "analyst_rec_score": rec_score,
+                "analyst_count": n_recs,
                 "source": f.get("source"),
             },
             notes=notes,

@@ -93,15 +93,19 @@ def _news_query(entry: UniverseEntry, asset_type: str, info: dict | None) -> str
 # Per-run building blocks
 # ---------------------------------------------------------------------------
 def build_macro_context() -> dict | None:
-    """Fetch the FRED macro bundle once per run."""
+    """Fetch the macro bundle once per run: FRED (US) + ECB/Eurostat/STOXX (euro area)."""
+    macro: dict = {}
     try:
         fred = get_provider("fred")
-        if not fred.is_available():
-            return None
-        return fred.get_macro_bundle()
+        if fred.is_available():
+            macro.update(fred.get_macro_bundle() or {})
     except Exception as exc:  # noqa: BLE001
-        log.warning("macro fetch failed: %s", exc)
-        return None
+        log.warning("FRED macro fetch failed: %s", exc)
+    try:
+        macro.update(get_provider("euromacro").get_bundle() or {})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("euro macro fetch failed: %s", exc)
+    return macro or None
 
 
 def build_benchmark_ohlcv(benchmark: str = "SPY") -> dict | None:
@@ -139,9 +143,16 @@ def build_ticker_context(
 
     # ---- ETF-specific block ----
     us = is_us_listed(ticker)
+    yf = get_provider("yfinance")
     etf_info = None
-    if asset_type == "etf" and us:
-        etf_info = _safe(errors, "fmp.etf_info", lambda: get_provider("fmp").get_etf_info(ticker))
+    if asset_type == "etf":
+        if us:
+            etf_info = _safe(errors, "fmp.etf_info", lambda: get_provider("fmp").get_etf_info(ticker))
+        # physical commodity ETCs (gold etc.) have no holdings to report
+        if not (entry.metadata or {}).get("category", "").startswith("commodities"):
+            holdings = _safe(errors, "yfinance.holdings", lambda: yf.get_fund_holdings(ticker))
+            if holdings:
+                etf_info = {**(etf_info or {}), **holdings}
 
     # ---- fundamentals (equities only) ----
     fundamentals = None
@@ -150,6 +161,7 @@ def build_ticker_context(
             _build_unified_fundamentals(ticker, errors) if us
             else _build_yahoo_fundamentals(ticker, errors)
         )
+        fundamentals = _add_yahoo_extras(ticker, fundamentals, errors)
 
     # ---- news ----
     news: list[dict] = []
@@ -170,6 +182,12 @@ def build_ticker_context(
     # We rely on the news_sentiment module's keyword polarity over the headlines instead.
     sentiment_score = None
 
+    # GDELT average tone (global, multilingual) — best-effort, often throttled
+    gdelt_tone = None
+    tone_query = _news_query(entry, asset_type, info)
+    if tone_query:
+        gdelt_tone = _safe(errors, "gdelt", lambda: get_provider("gdelt").get_tone(tone_query))
+
     # ---- social (only if Reddit configured) ----
     social = []
     reddit = get_provider("reddit")
@@ -179,22 +197,31 @@ def build_ticker_context(
     # ---- insider ----
     # EDGAR / Finnhub insider data only exists for US issuers
     insider = _build_insider_summary(ticker, errors) if asset_type == "equity" and us else None
+    if asset_type == "equity":
+        ownership = _safe(errors, "yfinance.ownership", lambda: yf.get_ownership(ticker)) or {}
+        if us:
+            si = _safe(errors, "finra.short_interest", lambda: get_provider("finra").get_short_interest(ticker))
+            if si:
+                ownership = {**ownership, **si}
+        if ownership:
+            insider = {**(insider or {}), "ownership": ownership}
 
     # ---- upcoming events ----
-    if us:
+    # ETFs don't report earnings or publish an ex-dividend calendar
+    calendar = (_safe(errors, "yfinance.calendar", lambda: yf.get_calendar(ticker)) or {}) \
+        if asset_type == "equity" else {}
+    if us and asset_type == "equity":
         earnings = _safe(errors, "finnhub.earnings_cal",
                          lambda: get_provider("finnhub").get_earnings_calendar(ticker, days_ahead=120))
-    elif asset_type == "equity":
-        earnings = _safe(errors, "yfinance.earnings",
-                         lambda: get_provider("yfinance").get_earnings_dates(ticker))
+        earnings = earnings or calendar.get("earnings")
     else:
-        earnings = None  # ETFs don't report earnings
+        earnings = calendar.get("earnings")
     upcoming_events = {
         "earnings": [
             {"date": e.get("date"), "estimate": e.get("epsEstimate"), "fiscal_period": e.get("quarter")}
             for e in (earnings or [])
         ],
-        "ex_dividend": [],   # populated when we wire dividend calendar in Phase 2.5
+        "ex_dividend": calendar.get("ex_dividend") or [],
         "fomc": [],          # populated from FRED later if useful
     }
 
@@ -202,6 +229,8 @@ def build_ticker_context(
     md = dict(entry.metadata or {})
     if sentiment_score is not None:
         md["finnhub_sentiment"] = sentiment_score
+    if gdelt_tone:
+        md["gdelt_tone"] = gdelt_tone
     if entry.note:
         md["note"] = entry.note
     md["source"] = entry.source
@@ -316,6 +345,37 @@ def _build_yahoo_fundamentals(ticker: str, errors: dict) -> dict | None:
     }
 
 
+def _add_yahoo_extras(ticker: str, fundamentals: dict | None, errors: dict) -> dict | None:
+    """Fill gaps from Yahoo: multi-year statements (when FMP had none), growth
+    computed from them, earnings surprises, and analyst consensus."""
+    yf = get_provider("yfinance")
+    f = dict(fundamentals or {"ttm": {}, "growth": {}, "source": "yahoo"})
+
+    if not f.get("income_periods"):
+        st = _safe(errors, "yfinance.statements", lambda: yf.get_statements(ticker)) or {}
+        if st:
+            f["income_periods"] = st.get("income") or []
+            f["balance_sheet_periods"] = st.get("balance") or []
+            f["cash_flow_periods"] = st.get("cashflow") or []
+            f["statements_source"] = "yahoo"
+    growth = dict(f.get("growth") or {})
+    income = f.get("income_periods") or []
+    if len(income) >= 3:
+        growth.setdefault("rev_3y", _cagr([r.get("revenue") for r in income[:4] if r.get("revenue")]))
+        growth.setdefault("eps_3y", _cagr([r.get("eps") for r in income[:4] if r.get("eps")]))
+    f["growth"] = {k: v for k, v in growth.items() if v is not None}
+
+    if not f.get("earnings_history"):
+        f["earnings_history"] = _safe(errors, "yfinance.earnings_history",
+                                      lambda: yf.get_earnings_history(ticker)) or []
+    analyst = _safe(errors, "yfinance.analyst", lambda: yf.get_analyst_view(ticker))
+    if analyst:
+        f["analyst"] = analyst
+
+    has_data = f.get("ttm") or f.get("growth") or f.get("income_periods") or f.get("analyst")
+    return f if has_data else fundamentals
+
+
 # ---------------------------------------------------------------------------
 # Insider unifier
 # ---------------------------------------------------------------------------
@@ -403,7 +463,7 @@ def _cagr(values: list[float]) -> float | None:
     end = values[0]
     start = values[-1]
     n_years = len(values) - 1
-    if not start or start == 0 or end is None or n_years <= 0:
+    if not start or start <= 0 or end is None or end <= 0 or n_years <= 0:
         return None
     try:
         return float((end / start) ** (1 / n_years) - 1)

@@ -57,8 +57,11 @@ class NewsSentimentModule(BaseAnalysisModule):
         # The pipeline can stash Finnhub's per-ticker sentiment under
         # ctx.metadata["finnhub_sentiment"] — it's a one-shot per ticker call.
 
-        if not news and finnhub_sentiment is None:
-            r = no_data(self.name, "no news headlines and no Finnhub sentiment")
+        gdelt = (ctx.metadata or {}).get("gdelt_tone") or {}
+        gdelt_tone = gdelt.get("avg_tone")
+
+        if not news and finnhub_sentiment is None and gdelt_tone is None:
+            r = no_data(self.name, "no news headlines, Finnhub sentiment or GDELT tone")
             r.horizon_weights = self.HORIZON_WEIGHTS
             return r
 
@@ -88,6 +91,9 @@ class NewsSentimentModule(BaseAnalysisModule):
                 pass
         if scored:
             components.append(mean_polarity)
+        if gdelt_tone is not None:
+            # GDELT tone is ~-10..+10 with ordinary news within ±3; ±5 maps to ±1
+            components.append(clamp(gdelt_tone / 5.0, -1.0, 1.0))
         combined = sum(components) / len(components) if components else 0.0
 
         score = clamp(combined * 0.5, -0.30, 0.30)
@@ -96,12 +102,19 @@ class NewsSentimentModule(BaseAnalysisModule):
             notes.append(f"Headline polarity over last {n_headlines} articles: {mean_polarity:+.2f}.")
         if finnhub_sentiment is not None:
             notes.append(f"Finnhub aggregate sentiment: {finnhub_sentiment:+.2f}.")
+        if gdelt_tone is not None:
+            notes.append(
+                f"GDELT global news tone {gdelt_tone:+.2f} over {gdelt.get('days_with_coverage')} days "
+                f"(last 3 days {gdelt.get('recent_tone', 0):+.2f})."
+            )
 
         confidence = 0.4
         if n_headlines >= 10:
             confidence += 0.20
         if finnhub_sentiment is not None:
             confidence += 0.20
+        if gdelt_tone is not None:
+            confidence += 0.15
         confidence = clamp(confidence, 0.0, 1.0)
 
         return ModuleResult(
@@ -114,10 +127,14 @@ class NewsSentimentModule(BaseAnalysisModule):
                 "headline_count": n_headlines,
                 "mean_polarity": round(mean_polarity, 3),
                 "finnhub_sentiment": finnhub_sentiment,
+                "gdelt_tone": gdelt or None,
                 "headlines_sample": scored[:10],
             },
             notes=notes,
-            data_quality="full" if (n_headlines >= 5 or finnhub_sentiment is not None) else "partial",
+            data_quality=(
+                "full" if (n_headlines >= 5 or finnhub_sentiment is not None or gdelt_tone is not None)
+                else "partial"
+            ),
         )
 
 

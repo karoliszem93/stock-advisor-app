@@ -133,6 +133,26 @@ You can trigger a run manually from the UI or via:
 curl -X POST http://localhost:8000/api/run/daily
 ```
 
+## Data sources
+
+| Source | Key | Used for |
+|---|---|---|
+| Yahoo Finance (yfinance) | none | prices, info, dividends; TTM ratios, annual statements, earnings history, analyst ratings/targets, ETF holdings, short % / ownership, earnings + ex-dividend calendar |
+| FRED | yes | US macro: VIX, Treasury yields, curve, unemployment, FX |
+| ECB Data Portal | none | ECB deposit rate, euro 10Y yield, EUR/USD |
+| Eurostat | none | euro-area HICP inflation, EU Economic Sentiment Indicator |
+| STOXX | none | VSTOXX (Europe's VIX) |
+| FMP / Alpha Vantage | yes | US fundamentals (free tiers are US-only) |
+| Finnhub | yes | US company news, earnings calendar, insider transactions |
+| SEC EDGAR | none | US insider Form 4 filings |
+| FINRA | none | US short interest (twice monthly) |
+| Google News RSS | none | headlines for non-US tickers and ETF themes |
+| NewsAPI | yes | extra headlines for non-US equities (100/day) |
+| GDELT | none | global news tone — best-effort, heavily throttled; results cached 36h |
+| Reddit | yes | social sentiment (not configured yet) |
+
+US-only free tiers are skipped for non-US listings (detected from the Yahoo exchange suffix, e.g. `.L`, `.DE`, `.PA`), so they don't waste calls on guaranteed rejections.
+
 ## Configuration
 
 All credentials live in `backend/.env` (gitignored). See `backend/.env.example` for the full list. The GitHub PAT used to push to `stock-advisor-data` is stored separately at `~/.config/stock-advisor/github_token` and is read at runtime by the git publisher — **never** placed in `.env` and never committed.

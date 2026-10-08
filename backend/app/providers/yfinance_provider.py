@@ -76,7 +76,7 @@ class YFinanceProvider(BaseProvider):
         """Return basic descriptive info: name, sector, industry, exchange,
         market cap, currency, ETF holdings (when applicable).
         """
-        cache_key = f"info:{ticker.upper()}"
+        cache_key = f"info:v2:{ticker.upper()}"  # v2: expense_ratio as a fraction
 
         def _fetch():
             t = yf.Ticker(ticker)
@@ -99,7 +99,10 @@ class YFinanceProvider(BaseProvider):
                 "fund_family": info.get("fundFamily"),
                 "isin": info.get("isin"),
                 # ETF-only fields:
-                "expense_ratio": info.get("annualReportExpenseRatio") or info.get("netExpenseRatio"),
+                # annualReportExpenseRatio is a fraction; netExpenseRatio is in percent (0.07 = 0.07%)
+                "expense_ratio": info.get("annualReportExpenseRatio") or (
+                    info["netExpenseRatio"] / 100 if info.get("netExpenseRatio") is not None else None
+                ),
                 "category": info.get("category"),
                 "total_assets": info.get("totalAssets"),
             }
@@ -139,17 +142,124 @@ class YFinanceProvider(BaseProvider):
 
         return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
 
-    def get_earnings_dates(self, ticker: str) -> list[dict] | None:
-        """Upcoming earnings dates from Yahoo's calendar (works for non-US listings)."""
-        cache_key = f"earnings_dates:{ticker.upper()}"
+    def get_calendar(self, ticker: str) -> dict | None:
+        """Upcoming earnings and ex-dividend dates (works for non-US listings).
+
+        Output: {"earnings": [{"date","epsEstimate","quarter"}], "ex_dividend": [{"date"}]}
+        """
+        cache_key = f"calendar:{ticker.upper()}"
 
         def _fetch():
             cal = yf.Ticker(ticker).calendar or {}
-            dates = cal.get("Earnings Date") or []
-            return [
-                {"date": d.isoformat(), "epsEstimate": _num(cal.get("Earnings Average")), "quarter": None}
-                for d in dates if d >= date.today()
-            ]
+            today = date.today()
+            exdiv = cal.get("Ex-Dividend Date")
+            return {
+                "earnings": [
+                    {"date": d.isoformat(), "epsEstimate": _num(cal.get("Earnings Average")), "quarter": None}
+                    for d in (cal.get("Earnings Date") or []) if d >= today
+                ],
+                "ex_dividend": [{"date": exdiv.isoformat()}] if exdiv and exdiv >= today else [],
+            }
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
+
+    def get_statements(self, ticker: str) -> dict | None:
+        """Annual income / balance / cash-flow statements, most recent first.
+
+        Rows use FMP's field names so the quality + growth code reads them
+        unchanged. Yahoo has ~4 years; banks lack some rows (current assets etc.).
+        """
+        cache_key = f"statements:{ticker.upper()}"
+
+        def _fetch():
+            t = yf.Ticker(ticker)
+            out = {
+                "income": _periods(t.income_stmt, _INCOME_ROWS),
+                "balance": _periods(t.balance_sheet, _BALANCE_ROWS),
+                "cashflow": _periods(t.cashflow, _CASHFLOW_ROWS),
+            }
+            return out if any(out.values()) else None
+
+        return self.cached_request(cache_key, ttl_seconds=7 * 24 * 3600, fetch=_fetch)
+
+    def get_earnings_history(self, ticker: str) -> list[dict] | None:
+        """Last reported quarters, most recent first: [{"date","eps_actual","eps_estimate","surprise_pct"}]."""
+        cache_key = f"earnings_history:{ticker.upper()}"
+
+        def _fetch():
+            df = yf.Ticker(ticker).earnings_history
+            if df is None or df.empty:
+                return []
+            rows = []
+            for idx, r in df.sort_index(ascending=False).iterrows():
+                rows.append({
+                    "date": idx.date().isoformat() if hasattr(idx, "date") else str(idx),
+                    "eps_actual": _num(r.get("epsActual")),
+                    "eps_estimate": _num(r.get("epsEstimate")),
+                    "surprise_pct": _num(r.get("surprisePercent")),
+                })
+            return rows
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
+
+    def get_analyst_view(self, ticker: str) -> dict | None:
+        """Analyst consensus: recommendation counts (current month) and price targets."""
+        cache_key = f"analyst:{ticker.upper()}"
+
+        def _fetch():
+            t = yf.Ticker(ticker)
+            out: dict[str, Any] = {}
+            recs = t.recommendations
+            if recs is not None and not recs.empty:
+                cur = recs.iloc[0]
+                out["recommendations"] = {
+                    k: _int(cur.get(k)) or 0 for k in ("strongBuy", "buy", "hold", "sell", "strongSell")
+                }
+            targets = t.analyst_price_targets or {}
+            if targets.get("mean"):
+                out["price_target"] = {k: _num(targets.get(k)) for k in ("current", "mean", "median", "low", "high")}
+            return out or None
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
+
+    def get_fund_holdings(self, ticker: str) -> dict | None:
+        """ETF top-10 holdings and sector weights (decimals)."""
+        cache_key = f"fund_holdings:{ticker.upper()}"
+
+        def _fetch():
+            f = yf.Ticker(ticker).funds_data
+            top = f.top_holdings
+            holdings = []
+            if top is not None and not top.empty:
+                holdings = [
+                    {"symbol": sym, "name": r.get("Name"), "weight": _num(r.get("Holding Percent"))}
+                    for sym, r in top.iterrows()
+                ]
+            sectors = {k: _num(v) for k, v in (f.sector_weightings or {}).items() if _num(v)}
+            if not holdings and not sectors:
+                return None
+            return {
+                "top_holdings": holdings,
+                "top10_weight": sum(h["weight"] or 0 for h in holdings[:10]) or None,
+                "sector_weights": sectors,
+            }
+
+        return self.cached_request(cache_key, ttl_seconds=7 * 24 * 3600, fetch=_fetch)
+
+    def get_ownership(self, ticker: str) -> dict | None:
+        """Short interest + institutional/insider ownership from Yahoo's quote summary."""
+        cache_key = f"ownership:{ticker.upper()}"
+
+        def _fetch():
+            info = dict(yf.Ticker(ticker).get_info() or {})
+            out = {
+                "short_pct_float": _num(info.get("shortPercentOfFloat")),
+                "short_ratio_days": _num(info.get("shortRatio")),
+                "float_shares": _num(info.get("floatShares")),
+                "held_pct_institutions": _num(info.get("heldPercentInstitutions")),
+                "held_pct_insiders": _num(info.get("heldPercentInsiders")),
+            }
+            return out if any(v is not None for v in out.values()) else None
 
         return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch)
 
@@ -183,3 +293,47 @@ def _num(v) -> float | None:
 def _int(v) -> int | None:
     n = _num(v)
     return int(n) if n is not None else None
+
+
+# Yahoo statement row -> FMP field name (what quality / growth code reads)
+_INCOME_ROWS = {
+    "Total Revenue": "revenue",
+    "Cost Of Revenue": "costOfRevenue",
+    "Gross Profit": "grossProfit",
+    "Operating Income": "operatingIncome",
+    "Net Income": "netIncome",
+    "Diluted EPS": "eps",
+}
+_BALANCE_ROWS = {
+    "Total Assets": "totalAssets",
+    "Current Assets": "totalCurrentAssets",
+    "Current Liabilities": "totalCurrentLiabilities",
+    "Total Liabilities Net Minority Interest": "totalLiabilities",
+    "Long Term Debt": "longTermDebt",
+    "Total Debt": "totalDebt",
+    "Retained Earnings": "retainedEarnings",
+    "Stockholders Equity": "totalStockholdersEquity",
+    "Ordinary Shares Number": "shares",
+}
+_CASHFLOW_ROWS = {
+    "Operating Cash Flow": "operatingCashFlow",
+    "Capital Expenditure": "capitalExpenditure",
+    "Free Cash Flow": "freeCashFlow",
+}
+
+
+def _periods(df: pd.DataFrame | None, rows: dict[str, str]) -> list[dict]:
+    """Yahoo statement frame (rows = items, columns = period ends) -> list of
+    period dicts, most recent first. Periods with no mapped values are dropped."""
+    if df is None or df.empty:
+        return []
+    out = []
+    for col in sorted(df.columns, reverse=True):
+        period = {"date": col.date().isoformat() if hasattr(col, "date") else str(col)}
+        for yahoo_row, field in rows.items():
+            if yahoo_row in df.index:
+                period[field] = _num(df.at[yahoo_row, col])
+        if any(v is not None for k, v in period.items() if k != "date"):
+            out.append(period)
+    return out
+

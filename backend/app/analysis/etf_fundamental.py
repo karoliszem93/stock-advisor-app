@@ -95,6 +95,19 @@ class EtfFundamentalModule(BaseAnalysisModule):
             except (ValueError, TypeError):
                 pass
 
+        # Concentration (Yahoo top-10 holdings)
+        top10 = etf_info.get("top10_weight")
+        if top10 is not None:
+            if top10 > 0.50:
+                s -= 0.03
+                notes.append(f"Top 10 holdings are {top10 * 100:.0f}% of the fund — concentrated.")
+            elif top10 < 0.20:
+                notes.append(f"Top 10 holdings only {top10 * 100:.0f}% — broadly diversified.")
+        sectors = etf_info.get("sector_weights") or {}
+        top_sector = max(sectors.items(), key=lambda kv: kv[1]) if sectors else None
+        if top_sector and top_sector[1] > 0.40:
+            notes.append(f"{top_sector[1] * 100:.0f}% in {top_sector[0].replace('_', ' ')}.")
+
         score = clamp(s)
         confidence = 0.6 if domicile else 0.4
 
@@ -110,6 +123,9 @@ class EtfFundamentalModule(BaseAnalysisModule):
                 "expense_ratio": expense_ratio,
                 "aum": aum,
                 "category": meta.get("category"),
+                "top10_weight": top10,
+                "top_holdings": [h.get("symbol") for h in (etf_info.get("top_holdings") or [])[:5]],
+                "top_sector": top_sector[0] if top_sector else None,
             },
             notes=notes,
             data_quality="full" if domicile and distribution else "partial",

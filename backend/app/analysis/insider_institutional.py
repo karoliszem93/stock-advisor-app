@@ -1,7 +1,12 @@
-"""Insider transactions + institutional holdings.
+"""Insider transactions, short interest + institutional holdings.
 
 Reads ctx.insider — combined view from EDGAR Form 4 summary + Finnhub
-insider transactions endpoint (the data-snapshot stage merges them).
+insider transactions endpoint (US only), plus ctx.insider["ownership"]:
+FINRA short interest (US) and Yahoo short % of float / institutional
+ownership (any listing).
+
+Heavy or rising short interest is a bearish crowd signal (with squeeze risk
+noted); falling short interest mildly positive.
 
 Insider buying is a classic positive signal (insiders typically only buy
 when they believe shares are undervalued). Insider selling is noisier
@@ -22,7 +27,7 @@ from app.analysis.base import (
 
 class InsiderInstitutionalModule(BaseAnalysisModule):
     name = "insider_institutional"
-    description = "Insider buying/selling activity from Form 4 + Finnhub."
+    description = "Insider buying/selling (Form 4 + Finnhub) and short interest (FINRA + Yahoo)."
     applies_to = ("equity",)
 
     HORIZON_WEIGHTS = {
@@ -32,8 +37,10 @@ class InsiderInstitutionalModule(BaseAnalysisModule):
 
     def analyze(self, ctx: AnalysisContext) -> ModuleResult:
         ins = ctx.insider or {}
-        if not ins:
-            r = no_data(self.name, "no insider data available")
+        own = ins.get("ownership") or {}
+        has_insider = any(k in ins for k in ("insider_buys_90d", "insider_sells_90d"))
+        if not has_insider and not own:
+            r = no_data(self.name, "no insider or ownership data available")
             r.horizon_weights = self.HORIZON_WEIGHTS
             return r
 
@@ -69,8 +76,32 @@ class InsiderInstitutionalModule(BaseAnalysisModule):
         elif net_pct < -0.01:
             s -= 0.05
 
+        # ---- Short interest ----
+        short_pct = own.get("short_pct_float")
+        dtc = own.get("days_to_cover") or own.get("short_ratio_days")
+        short_chg = own.get("short_change_pct")
+        if short_pct is not None and short_pct > 0.15:
+            s -= 0.05
+            notes.append(f"Short interest {short_pct * 100:.0f}% of float — heavily shorted (squeeze risk both ways).")
+        elif dtc is not None and dtc > 7:
+            s -= 0.03
+            notes.append(f"{dtc:.1f} days to cover short positions — crowded short.")
+        if short_chg is not None:
+            if short_chg > 0.15:
+                s -= 0.05
+                notes.append(f"Short interest up {short_chg * 100:.0f}% since last FINRA report.")
+            elif short_chg < -0.15:
+                s += 0.03
+                notes.append(f"Short interest down {-short_chg * 100:.0f}% since last FINRA report.")
+
+        inst = own.get("held_pct_institutions")
+        if inst is not None:
+            notes.append(f"Institutions hold {min(inst, 1.0) * 100:.0f}% of shares.")
+
         score = clamp(s, -0.20, 0.20)
         confidence = clamp(0.5 + (0.1 if (buys + sells) >= 5 else 0), 0.0, 1.0)
+        if not has_insider:
+            confidence = 0.35  # short interest / ownership alone is a weaker signal
 
         return ModuleResult(
             module=self.name,
@@ -83,6 +114,11 @@ class InsiderInstitutionalModule(BaseAnalysisModule):
                 "insider_sells_90d": sells,
                 "net_value_usd_90d": net_value,
                 "net_share_change_pct": net_pct,
+                "short_pct_float": short_pct,
+                "days_to_cover": dtc,
+                "short_change_pct": short_chg,
+                "short_settlement_date": own.get("settlement_date"),
+                "held_pct_institutions": inst,
             },
             notes=notes,
             data_quality="full" if (buys + sells) >= 5 else "partial",

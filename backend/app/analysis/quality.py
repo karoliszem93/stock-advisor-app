@@ -40,6 +40,8 @@ from app.analysis.base import (
 )
 
 
+_FINANCIAL_SECTORS = {"Financial Services", "Financials"}
+
 class QualityModule(BaseAnalysisModule):
     name = "quality"
     description = "Piotroski F-Score, Altman Z, Beneish M (where data permits)."
@@ -58,6 +60,14 @@ class QualityModule(BaseAnalysisModule):
 
         if not income or not balance:
             r = no_data(self.name, "missing income/balance sheet periods")
+            r.horizon_weights = self.HORIZON_WEIGHTS
+            return r
+
+        # Piotroski / Altman / Beneish assume an industrial balance sheet (current
+        # assets, gross margin, working capital). For banks and insurers they
+        # produce nonsense — e.g. a healthy bank scores in Altman's "distress zone".
+        if (ctx.info or {}).get("sector") in _FINANCIAL_SECTORS:
+            r = no_data(self.name, "quality scores not meaningful for banks/insurers")
             r.horizon_weights = self.HORIZON_WEIGHTS
             return r
 

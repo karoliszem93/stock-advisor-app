@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 class YFinanceProvider(BaseProvider):
     name = "yfinance"
     description = "Yahoo Finance — prices, splits, dividends, basic info (no key)."
-    rate_limit_capacity = 2000  # self-imposed politeness cap per day
+    rate_limit_capacity = 5000  # self-imposed politeness cap per day (pipeline + chart browsing)
     rate_limit_window_seconds = 86400
 
     def is_available(self) -> bool:
@@ -77,6 +77,76 @@ class YFinanceProvider(BaseProvider):
             return {"ticker": ticker.upper(), "currency": currency, "bars": bars}
 
         return self.cached_request(cache_key, ttl_seconds=12 * 3600, fetch=_fetch)
+
+    # interval -> (yfinance interval, history period, cache TTL seconds, resample rule)
+    CHART_INTERVALS = {
+        "15m": ("15m", "60d", 300, None),
+        "1h": ("60m", "730d", 600, None),
+        "4h": ("60m", "730d", 600, "4h"),
+        "1d": ("1d", "max", 3600, None),
+        "1wk": ("1wk", "max", 6 * 3600, None),
+        "1mo": ("1mo", "max", 6 * 3600, None),
+    }
+
+    def get_chart_bars(self, ticker: str, interval: str = "1d") -> dict | None:
+        """OHLCV for the chart page, as many bars as Yahoo allows for the interval.
+
+        `time` is a UTC unix timestamp for intraday intervals and "YYYY-MM-DD"
+        for daily and longer (the chart library treats those as calendar days).
+        """
+        if interval not in self.CHART_INTERVALS:
+            raise ValueError(f"unsupported interval {interval!r}")
+        yf_interval, period, ttl, resample = self.CHART_INTERVALS[interval]
+        cache_key = f"chart:{ticker.upper()}:{interval}"
+
+        def _fetch():
+            t = yf.Ticker(ticker)
+            df = t.history(period=period, interval=yf_interval, auto_adjust=False)
+            if df is None or df.empty:
+                return None
+            df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
+            if resample:
+                df = df.resample(resample).agg(
+                    {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+                ).dropna(subset=["Close"])
+            intraday = yf_interval.endswith("m")
+            bars = []
+            for idx, row in df.iterrows():
+                bars.append({
+                    "time": int(idx.timestamp()) if intraday else idx.date().isoformat(),
+                    "open": _num(row["Open"]),
+                    "high": _num(row["High"]),
+                    "low": _num(row["Low"]),
+                    "close": _num(row["Close"]),
+                    "volume": _num(row["Volume"]) or 0,
+                })
+            currency = ""
+            try:
+                currency = t.fast_info.get("currency") or ""
+            except Exception:  # noqa: BLE001
+                pass
+            return {"ticker": ticker.upper(), "interval": interval, "currency": currency, "bars": bars}
+
+        return self.cached_request(cache_key, ttl_seconds=ttl, fetch=_fetch)
+
+    def search_symbols(self, query: str, limit: int = 10) -> list[dict]:
+        """Yahoo symbol search (any listing worldwide)."""
+        cache_key = f"search:{query.lower()}:{limit}"
+
+        def _fetch():
+            quotes = yf.Search(query, max_results=limit, news_count=0).quotes or []
+            return [
+                {
+                    "symbol": q.get("symbol"),
+                    "name": q.get("shortname") or q.get("longname"),
+                    "exchange": q.get("exchDisp") or q.get("exchange"),
+                    "type": (q.get("quoteType") or "").lower(),
+                }
+                for q in quotes
+                if q.get("symbol") and q.get("quoteType") in ("EQUITY", "ETF", "INDEX", "MUTUALFUND", "CURRENCY", "CRYPTOCURRENCY", "FUTURE")
+            ]
+
+        return self.cached_request(cache_key, ttl_seconds=24 * 3600, fetch=_fetch) or []
 
     def get_info(self, ticker: str) -> dict | None:
         """Return basic descriptive info: name, sector, industry, exchange,

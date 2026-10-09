@@ -83,6 +83,14 @@ export default function TickerView() {
             </span>
           )}
           <span className="text-xs text-gray-500 font-mono">{ticker}</span>
+          {ticker && (
+            <Link
+              to={`/chart/${encodeURIComponent(ticker)}`}
+              className="ml-auto text-xs text-accent hover:underline"
+            >
+              Open chart →
+            </Link>
+          )}
         </div>
         <p className="text-sm text-gray-400 mt-1">
           All suggestions across risk profiles and timeframes.{" "}

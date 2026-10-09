@@ -5,6 +5,7 @@ import Validations from "./pages/Validations";
 import Settings from "./pages/Settings";
 import SuggestionDetail from "./pages/SuggestionDetail";
 import TickerView from "./pages/TickerView";
+import Chart from "./pages/Chart";
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `block px-3 py-2 rounded text-sm ${
@@ -19,6 +20,7 @@ export default function App() {
       <aside className="w-56 shrink-0 border-r border-border bg-panel/40 p-4 flex flex-col gap-1">
         <h1 className="text-lg font-semibold mb-4">stock-advisor</h1>
         <NavLink to="/" end className={navLinkClass}>Dashboard</NavLink>
+        <NavLink to="/chart" className={navLinkClass}>Chart</NavLink>
         <NavLink to="/watchlist" className={navLinkClass}>Watchlist</NavLink>
         <NavLink to="/validations" className={navLinkClass}>Validations</NavLink>
         <NavLink to="/settings" className={navLinkClass}>Settings</NavLink>
@@ -34,6 +36,8 @@ export default function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/suggestion/:id" element={<SuggestionDetail />} />
           <Route path="/ticker/:ticker" element={<TickerView />} />
+          <Route path="/chart" element={<Chart />} />
+          <Route path="/chart/:ticker" element={<Chart />} />
         </Routes>
       </main>
     </div>

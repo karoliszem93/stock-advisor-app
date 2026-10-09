@@ -61,6 +61,8 @@ export interface Rationale {
   tax_notes?: string;
   data_quality?: "full" | "degraded" | "missing";
   price_notes?: string[];
+  /** Native-currency levels (stored from 2026-10-09 onwards). */
+  prices?: { currency: string; entry: number; stop_loss: number; target: number };
 }
 
 export interface Suggestion {
@@ -178,6 +180,35 @@ export interface RunLog {
   errors: Record<string, string> | null;
 }
 
+export type ChartInterval = "15m" | "1h" | "4h" | "1d" | "1wk" | "1mo";
+
+export interface ChartBar {
+  /** UTC unix seconds for intraday intervals, "YYYY-MM-DD" for daily and longer. */
+  time: number | string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface ChartData {
+  ticker: string;
+  interval: ChartInterval;
+  name: string | null;
+  exchange: string | null;
+  currency: string | null;
+  bars: ChartBar[];
+}
+
+export interface SymbolHit {
+  symbol: string;
+  name: string | null;
+  exchange?: string | null;
+  type?: string;
+  source?: "watchlist" | "curated";
+}
+
 export interface LogLine {
   id: number;
   ts: string;
@@ -257,6 +288,13 @@ export const api = {
       request<RunLog[]>(`/api/runs/${qs({ limit, run_type })}`),
     latest: (run_type = "daily_pipeline") =>
       request<RunLog | null>(`/api/runs/latest${qs({ run_type })}`),
+  },
+
+  chart: {
+    bars: (ticker: string, interval: ChartInterval) =>
+      request<ChartData>(`/api/chart/bars/${encodeURIComponent(ticker)}${qs({ interval })}`),
+    symbols: () => request<SymbolHit[]>("/api/chart/symbols"),
+    search: (q: string) => request<SymbolHit[]>(`/api/chart/search${qs({ q })}`),
   },
 
   logs: (after = 0) =>

@@ -259,6 +259,14 @@ def _build_suggestion_row(
     rationale = adapt_thesis_for_cell(base, cand)
     if priced and priced.notes:
         rationale.setdefault("price_notes", []).extend(priced.notes)
+    if priced:
+        # native-currency levels (the columns only hold EUR) — used to draw them on the chart
+        rationale["prices"] = {
+            "currency": priced.currency,
+            "entry": priced.entry,
+            "stop_loss": priced.stop_loss,
+            "target": priced.target,
+        }
 
     target_date = timeframe_to_target_date(snapshot_date, cand.timeframe)
 

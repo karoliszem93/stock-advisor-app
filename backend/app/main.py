@@ -13,7 +13,7 @@ from app.config import get_settings
 from app.db import init_db
 from app.log_buffer import install as install_log_buffer
 from app.redact import RedactingFormatter
-from app.routes import health, logs, providers, run, runs, suggestions, validations, watchlist
+from app.routes import chart, health, logs, providers, run, runs, suggestions, validations, watchlist
 from app.scheduler import shutdown_scheduler, start_scheduler
 from app.services.data_publisher import restore_db_if_missing
 
@@ -94,3 +94,4 @@ app.include_router(run.router, prefix="/api/run", tags=["run"])
 app.include_router(providers.router, prefix="/api/providers", tags=["providers"])
 app.include_router(runs.router, prefix="/api/runs", tags=["runs"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
+app.include_router(chart.router, prefix="/api/chart", tags=["chart"])

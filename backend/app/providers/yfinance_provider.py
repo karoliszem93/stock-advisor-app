@@ -43,7 +43,7 @@ class YFinanceProvider(BaseProvider):
         Cached for 12h. The daily pipeline runs once a day so 12h is enough
         to dedupe within-day re-runs without serving stale prices.
         """
-        cache_key = f"ohlcv:{ticker.upper()}:{lookback_days}"
+        cache_key = f"ohlcv:v2:{ticker.upper()}:{lookback_days}"  # v2: empty bars dropped
 
         def _fetch():
             end = date.today() + timedelta(days=1)
@@ -57,6 +57,12 @@ class YFinanceProvider(BaseProvider):
             currency = (t.fast_info.get("currency") if hasattr(t, "fast_info") else None) or ""
             bars = []
             for idx, row in df.iterrows():
+                # Yahoo sometimes returns a placeholder row with no prices (e.g. the
+                # previous session for European listings, early in the morning).
+                # Keeping it makes the "last close" NaN, which blanks every price
+                # derived from it and poisons indicators.
+                if _num(row.get("Close")) is None:
+                    continue
                 bars.append({
                     "date": idx.date().isoformat(),
                     "open": _num(row.get("Open")),

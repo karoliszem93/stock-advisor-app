@@ -13,6 +13,15 @@ For a Buy:
 
 For a Sell-short, signs flip.
 
+Support / resistance refinement (levels from the technical rules engine):
+  - Stop: if a support level (resistance for shorts) sits so that a stop just
+    beyond it (0.25 ATR) is 0.5–1.5× the ATR stop distance, the stop goes
+    there instead — below a real level rather than at an arbitrary distance.
+  - Target (1w / 2w / 1m only): if the nearest resistance (support for shorts)
+    comes before the ATR target but still leaves ≥ 1.5× reward/risk, the
+    target is set just in front of it. If it leaves less, the target is kept
+    and a note warns that a level stands in the way.
+
 For an Avoid suggestion, prices are still emitted (for display) but
 treated as informational — the user shouldn't act on them.
 """
@@ -67,6 +76,8 @@ def price_cell(
     risk_profile: str,
     confidence: float,
     macro_bundle: dict | None,
+    support: list[float] | None = None,
+    resistance: list[float] | None = None,
 ) -> PricedCell:
     """Compute entry/stop/target prices in native currency + EUR conversion."""
     notes: list[str] = []
@@ -93,6 +104,10 @@ def price_cell(
         stop = last_close - stop_mult * atr
         target = last_close + target_mult * atr
         notes.append("Direction is 'avoid' — prices are reference only.")
+
+    stop, target = _refine_with_levels(
+        direction, entry, stop, target, atr, timeframe, support or [], resistance or [], notes,
+    )
 
     # ---- FX conversion to EUR ----
     fx_rate, fx_note = _fx_to_eur(currency, macro_bundle)
@@ -121,6 +136,44 @@ def price_cell(
         suggested_risk_pct=round(suggested_pct, 5),
         notes=notes,
     )
+
+
+_SHORT_HORIZONS = {"1w", "2w", "1m"}
+
+
+def _refine_with_levels(
+    direction: str, entry: float, stop: float, target: float, atr: float, timeframe: str,
+    support: list[float], resistance: list[float], notes: list[str],
+) -> tuple[float, float]:
+    """Move stop / target onto nearby support & resistance (see module docstring)."""
+    short = direction == "sell_short"
+    # levels "behind" the trade protect the stop; levels "ahead" cap the target
+    behind = sorted((r for r in resistance if r > entry), key=lambda x: x) if short \
+        else sorted((s for s in support if s < entry), key=lambda x: -x)
+    ahead = sorted((s for s in support if s < entry), key=lambda x: -x) if short \
+        else sorted((r for r in resistance if r > entry), key=lambda x: x)
+
+    atr_stop_dist = abs(entry - stop)
+    for lvl in behind:
+        cand = lvl + 0.25 * atr if short else lvl - 0.25 * atr
+        if 0.5 * atr_stop_dist <= abs(entry - cand) <= 1.5 * atr_stop_dist:
+            stop = cand
+            notes.append(f"Stop just {'above resistance' if short else 'below support'} at {lvl:.2f}.")
+            break
+
+    if ahead:
+        lvl = ahead[0]
+        risk = abs(entry - stop)
+        cand = lvl + 0.1 * atr if short else lvl - 0.1 * atr
+        reward = abs(cand - entry)
+        before_target = (cand > target) if short else (cand < target)
+        if before_target:
+            if timeframe in _SHORT_HORIZONS and risk > 0 and reward >= 1.5 * risk:
+                target = cand
+                notes.append(f"Target just in front of {'support' if short else 'resistance'} at {lvl:.2f}.")
+            else:
+                notes.append(f"{'Support' if short else 'Resistance'} at {lvl:.2f} lies before the target.")
+    return stop, target
 
 
 def _fx_to_eur(currency: str | None, macro_bundle: dict | None) -> tuple[float | None, str | None]:

@@ -133,6 +133,23 @@ You can trigger a run manually from the UI or via:
 curl -X POST http://localhost:8000/api/run/daily
 ```
 
+## Technical-analysis rules
+
+One engine (`backend/app/analysis/ta/`) serves both the daily scoring and the Chart page, so a manual read of the chart matches what was scored. Each rule reports its state on the latest bar (what gets scored), its historical buy/sell signals, and what to draw.
+
+| Category | Rules | Module |
+|---|---|---|
+| Trend | price vs 200-EMA; ADX (14) strength (×1.15 / ×0.85 amplifier) + DI crosses | technical |
+| Momentum | RSI (14) zones; MACD (12,26,9) crossovers | technical |
+| Volume | breakouts confirmed by ≥1.5× volume; OBV divergence / confirmation; unusual-volume spikes | technical |
+| Price levels | support / resistance from swing points — bounces, rejections; also places stops and targets | technical |
+| Patterns | candlesticks (engulfing, hammer, shooting star, morning / evening star); double top / bottom, bull / bear flags | technical |
+| Multi-timeframe | weekly trend (+/−0.10; daily signals that fight it are damped ×0.6) | technical |
+| Relative strength | vs the asset's own market (S&P 500, STOXX 600, FTSE 100, MSCI ACWI, EM, Nikkei; none for bonds / gold) | momentum |
+| Mean reversion | z-score (20 / 50) and Bollinger Bands (counted here only) | mean_reversion |
+
+Indicators use Wilder's smoothing (TradingView convention). Signals never use future data (tested: adding later bars never changes earlier signals). On the Chart page each rule can be shown or hidden; the panel shows each rule's current reading and the module scores they add up to.
+
 ## Data sources
 
 | Source | Key | Used for |

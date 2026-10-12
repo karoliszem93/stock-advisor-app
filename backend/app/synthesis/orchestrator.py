@@ -254,6 +254,8 @@ def _build_suggestion_row(
             risk_profile=cand.risk_profile,
             confidence=cand.cell_confidence,
             macro_bundle=macro,
+            support=technical_raw.get("support_levels"),
+            resistance=technical_raw.get("resistance_levels"),
         )
 
     rationale = adapt_thesis_for_cell(base, cand)

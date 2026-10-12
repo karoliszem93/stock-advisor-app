@@ -1,7 +1,8 @@
 """Momentum module — multi-period returns + relative strength vs benchmark.
 
 Looks at how the ticker has performed over rolling lookbacks and compares
-against the broad-market benchmark (SPY for US, VWRL for global) and
+against the market it belongs to (S&P 500 for US, STOXX 600 for Europe, MSCI ACWI
+for global ETFs, ... — see app/analysis/ta/benchmarks.py; none for bonds/gold) and
 sector ETF (when ctx.sector_ohlcv is supplied).
 
 Score components:
@@ -46,7 +47,13 @@ class MomentumModule(BaseAnalysisModule):
             return r
 
         closes = _closes(bars)
-        bench_closes = _closes((ctx.benchmark_ohlcv or {}).get("bars") or []) if ctx.benchmark_ohlcv else None
+        md = ctx.metadata or {}
+        bench_name = md.get("benchmark") or "benchmark"
+        # relative strength vs an equity index says nothing useful about bonds / gold
+        rs_ok = md.get("rs_applicable", True)
+        bench_closes = (
+            _closes((ctx.benchmark_ohlcv or {}).get("bars") or []) if ctx.benchmark_ohlcv and rs_ok else None
+        )
         sector_closes = _closes((ctx.sector_ohlcv or {}).get("bars") or []) if ctx.sector_ohlcv else None
 
         ret_1m = _return_pct(closes, 21)
@@ -79,9 +86,9 @@ class MomentumModule(BaseAnalysisModule):
         if rs_3m_bench is not None:
             s += clamp((rs_3m_bench - 1.0) * 1.5, -0.20, 0.20)
             if rs_3m_bench > 1.05:
-                notes.append(f"Outperformed benchmark by {(rs_3m_bench - 1) * 100:.1f}% over 3m.")
+                notes.append(f"Outperformed {bench_name} by {(rs_3m_bench - 1) * 100:.1f}% over 3m.")
             elif rs_3m_bench < 0.95:
-                notes.append(f"Underperformed benchmark by {(1 - rs_3m_bench) * 100:.1f}% over 3m.")
+                notes.append(f"Underperformed {bench_name} by {(1 - rs_3m_bench) * 100:.1f}% over 3m.")
 
         if rs_3m_sector is not None:
             s += clamp((rs_3m_sector - 1.0) * 1.0, -0.10, 0.10)
@@ -115,6 +122,7 @@ class MomentumModule(BaseAnalysisModule):
                 "ret_12m_pct": _pct(ret_12m),
                 "rs_vs_benchmark_3m": rs_3m_bench,
                 "rs_vs_benchmark_6m": rs_6m_bench,
+                "benchmark": bench_name if bench_closes is not None else None,
                 "rs_vs_sector_3m": rs_3m_sector,
                 "acceleration": acceleration,
             },

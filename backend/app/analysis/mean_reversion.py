@@ -4,20 +4,17 @@ Detects when price is far enough from its recent mean to expect a snap-back.
 Useful for short timeframes where overshoot reverses; less so on long
 timeframes where extension can persist.
 
-Components:
-  + Z-score of close vs 20-day mean (std dev)
-  + Z-score of close vs 50-day mean
-  + Bollinger %B reading
-  + Distance to 200-EMA in ATR units (extreme stretch flag)
+Uses the shared rules engine (app/analysis/ta/rules.py), the same rules the
+Chart page draws:
+  - Z-score: close vs 20- and 50-bar mean (stretched up = bearish), plus a
+    ±0.10 flag beyond 5 ATR from the 200-EMA
+  - Bollinger Bands (20, 2): %B at the lower / upper band (±0.15)
 
-Score sign convention: large *positive* z-score (price stretched up) is
-bearish here (we expect mean reversion DOWN). Large *negative* z-score
-is bullish (expect snap UP).
+Bollinger Bands are scored here only — the technical module no longer
+counts them too.
 """
 
 from __future__ import annotations
-
-import pandas as pd
 
 from app.analysis.base import (
     AnalysisContext,
@@ -27,6 +24,7 @@ from app.analysis.base import (
     direction_from_score,
     no_data,
 )
+from app.analysis.ta import rules as ta
 
 
 class MeanReversionModule(BaseAnalysisModule):
@@ -45,106 +43,29 @@ class MeanReversionModule(BaseAnalysisModule):
             r.horizon_weights = self.HORIZON_WEIGHTS
             return r
 
-        df = pd.DataFrame(bars)
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date").reset_index(drop=True)
-        closes = df["adj_close"].fillna(df["close"])
-
-        last = float(closes.iloc[-1])
-        z20 = _zscore(closes, 20)
-        z50 = _zscore(closes, 50)
-        bb_pct = _bb_pct(closes, 20)
-
-        atr = _atr(df, 14).iloc[-1]
-        ema_200 = (closes.ewm(span=200, adjust=False).mean().iloc[-1]
-                   if len(closes) >= 200 else None)
-        stretch_atr = (
-            (last - ema_200) / atr if ema_200 and atr and not pd.isna(ema_200) and not pd.isna(atr) and atr != 0
-            else None
-        )
-
-        s = 0.0
-        notes: list[str] = []
-
-        if z20 is not None:
-            s -= clamp(z20 * 0.20, -0.30, 0.30)  # invert: stretched up → bearish
-            if z20 > 1.5:
-                notes.append(f"Z-score vs 20d mean = {z20:.1f} (stretched upside).")
-            elif z20 < -1.5:
-                notes.append(f"Z-score vs 20d mean = {z20:.1f} (stretched downside).")
-
-        if z50 is not None:
-            s -= clamp(z50 * 0.10, -0.15, 0.15)
-
-        if bb_pct is not None:
-            if bb_pct < 0.10:
-                s += 0.15
-                notes.append("Lower Bollinger band — oversold.")
-            elif bb_pct > 0.90:
-                s -= 0.15
-                notes.append("Upper Bollinger band — overbought.")
-
-        if stretch_atr is not None:
-            if stretch_atr > 5:
-                s -= 0.10
-                notes.append(f"Price {stretch_atr:.1f} ATRs above 200-EMA — long-term stretch.")
-            elif stretch_atr < -5:
-                s += 0.10
-                notes.append(f"Price {-stretch_atr:.1f} ATRs below 200-EMA — long-term stretch.")
-
-        score = clamp(s)
-        confidence = 0.5 + (0.1 if z20 is not None else 0)
-        confidence = clamp(confidence, 0.0, 1.0)
+        df = ta.build_frame(bars, "date")
+        c = ta._Calc(df)
+        z, bb = ta.rule_zscore(c), ta.rule_bollinger(c)
+        agg = ta.aggregate_mean_reversion({"zscore": z, "bollinger": bb})
+        score = clamp(agg["score"])
+        pct_b = c.bb["pct_b"].iloc[-1]
 
         return ModuleResult(
             module=self.name,
             score=score,
             direction=direction_from_score(score),
-            confidence=confidence,
+            confidence=clamp(0.5 + (0.1 if z.meta.get("z20") is not None else 0), 0.0, 1.0),
             horizon_weights=self.HORIZON_WEIGHTS,
             raw={
-                "z20": z20,
-                "z50": z50,
-                "bb_pct": bb_pct,
-                "stretch_atr": stretch_atr,
-                "last_close": last,
+                "z20": z.meta.get("z20"),
+                "z50": z.meta.get("z50"),
+                "bb_pct": None if pct_b != pct_b else float(pct_b),
+                "stretch_atr": z.meta.get("stretch_atr"),
+                "last_close": float(df["close"].iloc[-1]),
+                "rules": {
+                    r.id: {"score": round(r.score, 3), "state": r.state, "status": r.status} for r in (z, bb)
+                },
             },
-            notes=notes,
-            data_quality="full" if len(closes) >= 200 else "partial",
+            notes=agg["notes"],
+            data_quality="full" if len(df) >= 200 else "partial",
         )
-
-
-def _zscore(s: pd.Series, period: int) -> float | None:
-    if len(s) < period:
-        return None
-    window = s.tail(period)
-    mu = float(window.mean())
-    sigma = float(window.std())
-    if sigma == 0:
-        return 0.0
-    return float((s.iloc[-1] - mu) / sigma)
-
-
-def _bb_pct(s: pd.Series, period: int) -> float | None:
-    if len(s) < period:
-        return None
-    window = s.tail(period)
-    mu = window.mean()
-    sd = window.std()
-    upper = mu + 2 * sd
-    lower = mu - 2 * sd
-    if (upper - lower) == 0:
-        return 0.5
-    return float((s.iloc[-1] - lower) / (upper - lower))
-
-
-def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close_prev = df["close"].astype(float).shift(1)
-    tr = pd.concat([
-        (high - low),
-        (high - close_prev).abs(),
-        (low - close_prev).abs(),
-    ], axis=1).max(axis=1)
-    return tr.rolling(period).mean()

@@ -209,6 +209,54 @@ export interface SymbolHit {
   source?: "watchlist" | "curated";
 }
 
+// ---- technical-analysis rules (same engine the daily scoring uses) ----
+export interface TAPoint {
+  time: number | string;
+  value: number;
+  color?: string;
+}
+
+export type TAOverlay =
+  | { type: "line"; pane: string; name: string; color: string; data: TAPoint[];
+      style?: "solid" | "dashed" | "dotted"; width?: number; guides?: number[] }
+  | { type: "histogram"; pane: string; name: string; data: TAPoint[] }
+  | { type: "levels"; levels: { price: number; label: string; color: string }[] }
+  | { type: "segments"; segments: { points: TAPoint[]; color: string; dashed: boolean; label?: string | null }[] }
+  | { type: "background"; data: TAPoint[] };
+
+export interface TARule {
+  id: string;
+  name: string;
+  category: string;
+  module: "technical" | "mean_reversion" | "momentum";
+  description: string;
+  score: number;
+  state: -1 | 0 | 1;
+  status: string;
+  available: boolean;
+  meta: Record<string, unknown>;
+}
+
+export interface TAEvent {
+  time: number | string;
+  rule: string;
+  side: "buy" | "sell";
+  label: string;
+}
+
+export interface TAData {
+  rules: TARule[];
+  events: TAEvent[];
+  overlays: Record<string, TAOverlay[]>;
+  summary: {
+    technical: { score: number; amplifier: number; htf_state: number; htf_conflict: boolean };
+    mean_reversion: { score: number };
+    relative_strength: { score: number; benchmark: string | null };
+    interval: ChartInterval;
+    bars_evaluated: number;
+  };
+}
+
 export interface LogLine {
   id: number;
   ts: string;
@@ -295,6 +343,8 @@ export const api = {
       request<ChartData>(`/api/chart/bars/${encodeURIComponent(ticker)}${qs({ interval })}`),
     symbols: () => request<SymbolHit[]>("/api/chart/symbols"),
     search: (q: string) => request<SymbolHit[]>(`/api/chart/search${qs({ q })}`),
+    ta: (ticker: string, interval: ChartInterval) =>
+      request<TAData>(`/api/chart/ta/${encodeURIComponent(ticker)}${qs({ interval })}`),
   },
 
   logs: (after = 0) =>

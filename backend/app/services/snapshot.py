@@ -26,6 +26,7 @@ import logging
 from datetime import date
 
 from app.analysis.base import AnalysisContext
+from app.analysis.ta.benchmarks import benchmark_for
 from app.providers.registry import get_provider
 from app.redact import redact_exc
 from app.services.universe import UniverseEntry
@@ -225,8 +226,20 @@ def build_ticker_context(
         "fomc": [],          # populated from FRED later if useful
     }
 
-    # The module reads finnhub_sentiment from ctx.metadata — stash it there.
+    # ---- benchmark: the market this asset belongs to (relative strength, beta) ----
     md = dict(entry.metadata or {})
+    bench = benchmark_for(ticker, category=md.get("category"), country=(info or {}).get("country"),
+                          asset_type=asset_type)
+    if bench:
+        bench_bars = _safe(errors, "yfinance.benchmark", lambda: yf.get_ohlcv(bench[0], 800))  # cached per run
+        if bench_bars:
+            benchmark_ohlcv = bench_bars
+        md["benchmark"] = bench[1]
+    else:
+        # bonds / gold: keep the S&P 500 series for beta, but no relative-strength signal
+        md["rs_applicable"] = False
+
+    # The module reads finnhub_sentiment from ctx.metadata — stash it there.
     if sentiment_score is not None:
         md["finnhub_sentiment"] = sentiment_score
     if gdelt_tone:

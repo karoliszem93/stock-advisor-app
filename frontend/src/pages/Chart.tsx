@@ -9,6 +9,9 @@ import {
   type ChartInterval,
   type RiskProfile,
   type SuggestionDetail,
+  type TAData,
+  type TAOverlay,
+  type TAPoint,
   type Timeframe,
 } from "../lib/api";
 import TradingChart, {
@@ -23,6 +26,9 @@ import TradingChart, {
   type TradingChartHandle,
 } from "../components/chart/TradingChart";
 import SymbolSearch from "../components/chart/SymbolSearch";
+import TaPanel from "../components/chart/TaPanel";
+
+const DEFAULT_RULES = ["trend_ema200", "support_resistance", "breakout", "chart_patterns"];
 
 const INTERVALS: { key: ChartInterval; label: string }[] = [
   { key: "15m", label: "15m" },
@@ -94,6 +100,22 @@ function toLocalTime(t: number): number {
   return t - new Date(t * 1000).getTimezoneOffset() * 60;
 }
 
+/** Apply the intraday local-time shift to every time inside the TA payload. */
+function shiftTA(d: TAData): TAData {
+  const sh = (p: TAPoint): TAPoint => ({ ...p, time: toLocalTime(p.time as number) });
+  const overlays: Record<string, TAOverlay[]> = {};
+  for (const [k, list] of Object.entries(d.overlays)) {
+    overlays[k] = list.map((o) =>
+      o.type === "line" || o.type === "histogram" || o.type === "background"
+        ? { ...o, data: o.data.map(sh) }
+        : o.type === "segments"
+        ? { ...o, segments: o.segments.map((s) => ({ ...s, points: s.points.map(sh) })) }
+        : o,
+    );
+  }
+  return { ...d, events: d.events.map((e) => ({ ...e, time: toLocalTime(e.time as number) })), overlays };
+}
+
 function decimalsFor(price: number): number {
   if (price >= 1000) return 2;
   if (price >= 1) return 2;
@@ -120,6 +142,13 @@ export default function Chart() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [indMenu, setIndMenu] = useState(false);
+  const [ta, setTa] = useState<TAData | null>(null);
+  const [taLoading, setTaLoading] = useState(false);
+  const [taError, setTaError] = useState<string | null>(null);
+  const [rulesOn, setRulesOn] = useState<Set<string>>(() => new Set(loadRaw<string[]>("chart.taRules", DEFAULT_RULES)));
+  const [showPanel, setShowPanel] = useState<boolean>(() => loadRaw("chart.taPanel", true));
+  const [showSignals, setShowSignals] = useState<boolean>(() => loadRaw("chart.taSignals", true));
+  const [markerLabels, setMarkerLabels] = useState<boolean>(() => loadRaw("chart.taLabels", false));
   const chart = useRef<TradingChartHandle>(null);
   const wrap = useRef<HTMLDivElement>(null);
 
@@ -135,6 +164,10 @@ export default function Chart() {
   useEffect(() => save("chart.showSuggestions", showSugg), [showSugg]);
   useEffect(() => save("chart.risk", risk), [risk]);
   useEffect(() => save("chart.tf", tf), [tf]);
+  useEffect(() => save("chart.taRules", [...rulesOn]), [rulesOn]);
+  useEffect(() => save("chart.taPanel", showPanel), [showPanel]);
+  useEffect(() => save("chart.taSignals", showSignals), [showSignals]);
+  useEffect(() => save("chart.taLabels", markerLabels), [markerLabels]);
   useEffect(() => {
     if (ticker) save("chart.ticker", ticker);
   }, [ticker]);
@@ -188,6 +221,27 @@ export default function Chart() {
     };
   }, [ticker, interval, intraday]);
 
+  // technical-analysis rules for this symbol + interval
+  useEffect(() => {
+    if (!ticker) return;
+    let cancelled = false;
+    setTaLoading(true);
+    setTaError(null);
+    api.chart
+      .ta(ticker, interval)
+      .then((d) => !cancelled && setTa(intraday ? shiftTA(d) : d))
+      .catch((e) => {
+        if (!cancelled) {
+          setTa(null);
+          setTaError(String(e).includes("404") ? "Not enough history for the rules." : String(e));
+        }
+      })
+      .finally(() => !cancelled && setTaLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, interval, intraday]);
+
   // load the app's suggestions for this symbol
   useEffect(() => {
     if (!ticker) return;
@@ -219,12 +273,39 @@ export default function Chart() {
       let i = times.length - 1;
       while (i >= 0 && times[i] > s.suggestion_date) i--;
       if (i < 0) continue;
-      out.push({ time: times[i] as Time, direction: s.direction, text: s.direction === "buy" ? "B" : s.direction === "sell_short" ? "S" : "" });
+      out.push({
+        time: times[i] as Time,
+        side: s.direction === "buy" ? "buy" : s.direction === "sell_short" ? "sell" : "neutral",
+        text: s.direction === "buy" ? "App B" : s.direction === "sell_short" ? "App S" : "",
+        source: "app",
+      });
     }
-    // one marker per bar, ascending by time (library requirement)
+    // one app marker per bar
     const byTime = new Map(out.map((m) => [String(m.time), m]));
-    return [...byTime.values()].sort((a, b) => String(a.time).localeCompare(String(b.time)));
+    return [...byTime.values()];
   }, [showSugg, intraday, bars, cellSuggestions]);
+
+  const taMarkers = useMemo<ChartMarker[]>(() => {
+    if (!ta || !showSignals) return [];
+    return ta.events
+      .filter((e) => rulesOn.has(e.rule))
+      .map((e) => ({ time: e.time as Time, side: e.side, text: e.label, source: "ta" as const }));
+  }, [ta, showSignals, rulesOn]);
+  const allMarkers = useMemo(() => [...markers, ...taMarkers], [markers, taMarkers]);
+
+  const taOverlays = useMemo<TAOverlay[]>(
+    () => (ta ? [...rulesOn].flatMap((id) => ta.overlays[id] ?? []) : []),
+    [ta, rulesOn],
+  );
+
+  const toggleRule = useCallback((id: string) => {
+    setRulesOn((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // entry / stop / target of the latest suggestion in that cell
   const latest = cellSuggestions[0];
@@ -333,7 +414,7 @@ export default function Chart() {
         <div className="mx-1 h-5 w-px bg-border" />
         <label className="flex items-center gap-1 text-xs text-gray-300">
           <input type="checkbox" checked={showSugg} onChange={(e) => setShowSugg(e.target.checked)} />
-          Suggestions
+          App suggestions
         </label>
         {showSugg && (
           <>
@@ -347,14 +428,18 @@ export default function Chart() {
         )}
 
         <div className="ml-auto flex items-center gap-1">
+          <button className={btn(showPanel)} title="Technical rules panel" onClick={() => setShowPanel((v) => !v)}>
+            ☰ Rules
+          </button>
           <button className={btn(false)} title="Fit all data" onClick={() => chart.current?.fit()}>⤢ Fit</button>
           <button className={btn(false)} title="Save chart as PNG" onClick={screenshot}>📷</button>
           <button className={btn(false)} title="Fullscreen" onClick={fullscreen}>⛶</button>
         </div>
       </div>
 
-      {/* ---- chart ---- */}
-      <div className="relative min-h-0 flex-1">
+      {/* ---- chart + rules panel ---- */}
+      <div className="flex min-h-0 flex-1">
+      <div className="relative min-w-0 flex-1">
         {error ? (
           <div className="m-4 rounded border border-danger/40 bg-danger/10 p-3 text-sm">{error}</div>
         ) : (
@@ -368,14 +453,31 @@ export default function Chart() {
             drawings={drawings}
             drawMode={drawMode}
             onAddDrawing={addDrawing}
-            markers={markers}
+            markers={allMarkers}
             levels={levels}
+            taOverlays={taOverlays}
+            markerLabels={markerLabels}
             priceDecimals={priceDecimals}
           />
         )}
         {loading && (
           <div className="absolute right-3 top-2 z-10 text-xs text-gray-500">Loading…</div>
         )}
+      </div>
+      {showPanel && (
+        <TaPanel
+          data={ta}
+          loading={taLoading}
+          error={taError}
+          enabled={rulesOn}
+          onToggle={toggleRule}
+          onSet={(ids) => setRulesOn(new Set(ids))}
+          showSignals={showSignals}
+          onShowSignals={setShowSignals}
+          labels={markerLabels}
+          onLabels={setMarkerLabels}
+        />
+      )}
       </div>
 
       {/* ---- bottom bar ---- */}

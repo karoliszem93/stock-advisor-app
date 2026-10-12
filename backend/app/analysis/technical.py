@@ -1,27 +1,27 @@
 """Technical analysis module.
 
-Captures classical chart-based signals on price action:
-  - RSI (14)         — overbought/oversold momentum oscillator
-  - MACD (12,26,9)   — trend + momentum crossover signal
-  - EMAs (20/50/200) — trend regime & relative position
-  - Bollinger Bands  — volatility envelope, %B position
-  - ATR (14)         — volatility magnitude (for stop-sizing)
-  - ADX (14)         — trend strength
-  - Support/Resistance — last 90-day swing highs/lows
+Scores the chart with the shared rules engine (app/analysis/ta/rules.py) —
+the same rules the Chart page draws, so a manual read of the chart matches
+what was scored:
 
-Score blending logic (each contributes ±0.10..0.30):
-  + RSI mean-reverting buy zones (oversold in uptrend), sell zones (overbought in downtrend)
-  + MACD bullish/bearish cross within last 5 bars
-  + Price above 200-EMA = trend up
-  + ADX > 25 amplifies the trend signal; ADX < 15 dampens
-  + Bollinger %B near 0 = oversold, near 1 = overbought
+  Trend            price vs 200-EMA, ADX (14) strength + DI crosses
+  Momentum         RSI (14) zones, MACD (12,26,9) crossovers
+  Volume           volume-confirmed breakouts, OBV divergence/confirmation,
+                   unusual-volume spikes
+  Price levels     support/resistance bounces and rejections
+  Patterns         candlesticks (engulfing, hammer, stars), chart patterns
+                   (double top/bottom, bull/bear flags)
+  Multi-timeframe  weekly trend — adds ±0.10 and damps daily signals that
+                   fight it (×0.6)
+
+Score = sum of rule contributions × ADX amplifier (×1.15 strong trend,
+×0.85 no trend), then the weekly-conflict damping. Bollinger Bands live in
+the mean-reversion module only (previously counted in both).
 """
 
 from __future__ import annotations
 
 from typing import Any
-
-import pandas as pd
 
 from app.analysis.base import (
     AnalysisContext,
@@ -31,11 +31,13 @@ from app.analysis.base import (
     direction_from_score,
     no_data,
 )
+from app.analysis.ta import indicators as ind
+from app.analysis.ta import rules as ta
 
 
 class TechnicalModule(BaseAnalysisModule):
     name = "technical"
-    description = "Classical TA: RSI, MACD, EMAs, Bollinger, ATR, ADX, swings."
+    description = "Chart rules: trend, RSI, MACD, ADX, volume, S/R, candlestick + chart patterns, weekly trend."
     applies_to = ("equity", "etf")
 
     # Technical signals are most useful on shorter horizons.
@@ -51,211 +53,50 @@ class TechnicalModule(BaseAnalysisModule):
             r.horizon_weights = self.HORIZON_WEIGHTS
             return r
 
-        df = _to_df(bars)
-        closes = df["close"]
+        df = ta.build_frame(bars, "date")
+        outs = ta.evaluate(df, htf_rule="W-FRI", htf_label="Weekly")
+        agg = ta.aggregate_technical(outs)
+        score = clamp(agg["score"])
 
-        # ---- indicators ----
-        rsi_14 = _rsi(closes, 14).iloc[-1]
-        macd_line, signal_line, hist = _macd(closes)
-        ema_20 = closes.ewm(span=20, adjust=False).mean().iloc[-1]
-        ema_50 = closes.ewm(span=50, adjust=False).mean().iloc[-1]
-        ema_200 = (closes.ewm(span=200, adjust=False).mean().iloc[-1]
-                   if len(closes) >= 200 else None)
-
-        bb_mid = closes.rolling(20).mean().iloc[-1]
-        bb_std = closes.rolling(20).std().iloc[-1]
-        bb_upper = bb_mid + 2 * bb_std
-        bb_lower = bb_mid - 2 * bb_std
-        bb_pct = (
-            (closes.iloc[-1] - bb_lower) / (bb_upper - bb_lower)
-            if (bb_upper - bb_lower) else 0.5
-        )
-
-        atr_14 = _atr(df, 14).iloc[-1]
-        adx_14 = _adx(df, 14).iloc[-1]
-
-        swings = _swings(df, lookback=90)
-        last_close = closes.iloc[-1]
-
+        adx = outs["adx"].meta.get("adx")
+        sr = outs["support_resistance"].meta
         raw: dict[str, Any] = {
-            "last_close": float(last_close),
-            "rsi_14": _f(rsi_14),
-            "macd": {
-                "macd": _f(macd_line.iloc[-1]),
-                "signal": _f(signal_line.iloc[-1]),
-                "hist": _f(hist.iloc[-1]),
+            "last_close": float(df["close"].iloc[-1]),
+            "atr_14": _last(ind.atr(df, 14)),  # Wilder; pricing uses it for stop/target distances
+            "rsi_14": _last(ind.rsi(df["close"], 14)),
+            "adx_14": adx,
+            "ema_200": _last(ind.ema(df["close"], 200)),
+            "support_levels": [lv["price"] for lv in sr.get("support", [])],
+            "resistance_levels": [lv["price"] for lv in sr.get("resistance", [])],
+            "weekly_trend": agg["htf_state"],
+            "weekly_conflict": agg["htf_conflict"],
+            "adx_amplifier": agg["amplifier"],
+            "rules": {
+                k: {"score": round(outs[k].score, 3), "state": outs[k].state, "status": outs[k].status}
+                for k in ta.TECHNICAL_RULES
             },
-            "ema_20": _f(ema_20),
-            "ema_50": _f(ema_50),
-            "ema_200": _f(ema_200),
-            "bb_pct": _f(bb_pct),
-            "atr_14": _f(atr_14),
-            "adx_14": _f(adx_14),
-            "support_levels": swings["support"],
-            "resistance_levels": swings["resistance"],
         }
 
-        # ---- score ----
-        s = 0.0
-        notes: list[str] = []
-
-        # Trend (price vs 200-EMA)
-        if ema_200 and not pd.isna(ema_200):
-            trend_strength = (last_close - ema_200) / ema_200
-            s += clamp(trend_strength * 5, -0.3, 0.3)
-            if trend_strength > 0.02:
-                notes.append(f"Price {trend_strength * 100:.1f}% above 200-EMA — trend up.")
-            elif trend_strength < -0.02:
-                notes.append(f"Price {-trend_strength * 100:.1f}% below 200-EMA — trend down.")
-
-        # Momentum (RSI buy/sell zones)
-        if not pd.isna(rsi_14):
-            if 30 <= rsi_14 <= 45 and last_close > (ema_50 or last_close):
-                s += 0.20
-                notes.append(f"RSI {rsi_14:.0f} — pullback within an uptrend.")
-            elif 55 <= rsi_14 <= 70 and ema_200 and last_close < ema_200:
-                s -= 0.20
-                notes.append(f"RSI {rsi_14:.0f} — bounce within a downtrend.")
-            elif rsi_14 < 30:
-                s += 0.15
-                notes.append(f"RSI {rsi_14:.0f} — oversold.")
-            elif rsi_14 > 75:
-                s -= 0.15
-                notes.append(f"RSI {rsi_14:.0f} — overbought.")
-
-        # MACD recent cross
-        cross = _recent_cross(macd_line, signal_line, lookback=5)
-        if cross == "bull":
-            s += 0.20
-            notes.append("Recent MACD bullish cross.")
-        elif cross == "bear":
-            s -= 0.20
-            notes.append("Recent MACD bearish cross.")
-
-        # Trend strength via ADX (amplifier)
-        if not pd.isna(adx_14):
-            if adx_14 > 25:
-                s *= 1.15
-                notes.append(f"ADX {adx_14:.0f} — strong trend, signals more reliable.")
-            elif adx_14 < 15:
-                s *= 0.85
-                notes.append(f"ADX {adx_14:.0f} — weak trend, signals less reliable.")
-
-        # Bollinger extreme (mean-reversion bias)
-        if bb_pct is not None and not pd.isna(bb_pct):
-            if bb_pct < 0.05:
-                s += 0.10
-                notes.append("Price at lower Bollinger band — stretched downside.")
-            elif bb_pct > 0.95:
-                s -= 0.10
-                notes.append("Price at upper Bollinger band — stretched upside.")
-
-        score = clamp(s)
         confidence = 0.6
-        if not pd.isna(adx_14) and adx_14 > 25:
+        if adx is not None and adx > 25:
             confidence += 0.15
-        if len(closes) < 200:
+        if agg["htf_state"] and not agg["htf_conflict"] and score:
+            confidence += 0.05
+        if len(df) < 200:
             confidence -= 0.10
-        confidence = clamp(confidence, 0.0, 1.0)
 
         return ModuleResult(
             module=self.name,
             score=score,
             direction=direction_from_score(score),
-            confidence=confidence,
+            confidence=clamp(confidence, 0.0, 1.0),
             horizon_weights=self.HORIZON_WEIGHTS,
             raw=raw,
-            notes=notes,
-            data_quality="full" if len(closes) >= 200 else "partial",
+            notes=agg["notes"],
+            data_quality="full" if len(df) >= 200 else "partial",
         )
 
 
-# ----------------------------------------------------------------------
-# helpers
-# ----------------------------------------------------------------------
-def _to_df(bars: list[dict]) -> pd.DataFrame:
-    df = pd.DataFrame(bars)
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    # use adjusted close for everything price-derived
-    df["close"] = df["adj_close"].fillna(df["close"])
-    return df
-
-
-def _f(x) -> float | None:
-    if x is None:
-        return None
-    try:
-        if pd.isna(x):
-            return None
-        return float(x)
-    except (TypeError, ValueError):
-        return None
-
-
-def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(period).mean()
-    loss = (-delta.clip(upper=0)).rolling(period).mean()
-    rs = gain / loss.replace(0, pd.NA)
-    return 100 - 100 / (1 + rs)
-
-
-def _macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    sig = macd.ewm(span=signal, adjust=False).mean()
-    hist = macd - sig
-    return macd, sig, hist
-
-
-def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close_prev = df["close"].astype(float).shift(1)
-    tr = pd.concat([
-        (high - low),
-        (high - close_prev).abs(),
-        (low - close_prev).abs(),
-    ], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-
-def _adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    plus_dm = (high.diff()).clip(lower=0)
-    minus_dm = (-low.diff()).clip(lower=0)
-    plus_dm = plus_dm.where(plus_dm > minus_dm, 0)
-    minus_dm = minus_dm.where(minus_dm > plus_dm, 0)
-    atr = _atr(df, period)
-    plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(period).mean() / atr)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)
-    return dx.rolling(period).mean()
-
-
-def _recent_cross(line: pd.Series, signal: pd.Series, lookback: int = 5) -> str | None:
-    diff = (line - signal).tail(lookback + 1)
-    if len(diff) < 2:
-        return None
-    flips = (diff.shift(1) * diff < 0).fillna(False)
-    if not flips.tail(lookback).any():
-        return None
-    return "bull" if diff.iloc[-1] > 0 else "bear"
-
-
-def _swings(df: pd.DataFrame, lookback: int = 90) -> dict:
-    """Find recent significant swing highs/lows via rolling argmax/argmin."""
-    recent = df.tail(lookback)
-    if len(recent) < 5:
-        return {"support": [], "resistance": []}
-    last = float(recent["close"].iloc[-1])
-
-    highs = recent["high"].nlargest(5).round(2).tolist()
-    lows = recent["low"].nsmallest(5).round(2).tolist()
-
-    resistance = sorted({h for h in highs if h > last})[:3]
-    support = sorted({l for l in lows if l < last}, reverse=True)[:3]
-    return {"support": support, "resistance": resistance}
+def _last(s) -> float | None:
+    v = s.iloc[-1] if len(s) else None
+    return None if v is None or v != v else float(v)  # v != v is the NaN check

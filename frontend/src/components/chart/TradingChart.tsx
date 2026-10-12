@@ -19,6 +19,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import { bollinger, ema, heikinAshi, macd, rsi, sma, type Bar, type Series } from "../../lib/indicators";
+import type { TAOverlay } from "../../lib/api";
 
 export type ChartType = "candles" | "hollow" | "heikin" | "bars" | "line" | "area";
 export type ScaleMode = "normal" | "log" | "percent";
@@ -43,8 +44,10 @@ export type Drawing =
 
 export interface ChartMarker {
   time: Time;
-  direction: "buy" | "avoid" | "sell_short";
+  side: "buy" | "sell" | "neutral";
   text: string;
+  /** "app" = the app's own suggestion; "ta" = a technical-analysis rule signal */
+  source: "app" | "ta";
 }
 
 export interface ChartLevel {
@@ -71,6 +74,10 @@ interface Props {
   onAddDrawing: (d: Drawing) => void;
   markers: ChartMarker[];
   levels: ChartLevel[];
+  /** overlays of the enabled technical-analysis rules */
+  taOverlays: TAOverlay[];
+  /** draw marker text on the chart (otherwise names show in the legend on hover) */
+  markerLabels: boolean;
   priceDecimals: number;
 }
 
@@ -121,7 +128,7 @@ function fmtVol(v: number): string {
 interface LegendRow { label: string; value: string; color: string }
 
 const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart(props, ref) {
-  const { bars, seriesKey, chartType, indicators, scaleMode, drawings, drawMode, markers, levels, priceDecimals } = props;
+  const { bars, seriesKey, chartType, indicators, scaleMode, drawings, drawMode, markers, levels, taOverlays, markerLabels, priceDecimals } = props;
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<ISeriesApi<SeriesType>[]>([]);
@@ -224,6 +231,8 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     seriesRefs.current = [];
     while (chart.panes().length > 1) chart.removePane(chart.panes().length - 1);
     if (!bars.length) return;
+    // time of day only matters on intraday charts (numeric times)
+    chart.applyOptions({ timeScale: { timeVisible: typeof bars[0].time === "number" } });
 
     const add = <T extends SeriesType>(s: ISeriesApi<T>) => {
       seriesRefs.current.push(s as unknown as ISeriesApi<SeriesType>);
@@ -231,6 +240,20 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     };
     const fmt = { type: "price" as const, precision: priceDecimals, minMove: 1 / 10 ** priceDecimals };
     const { display } = computed;
+
+    // higher-timeframe trend shading, added first so it sits under the candles
+    for (const ov of taOverlays) {
+      if (ov.type !== "background") continue;
+      const bg = add(chart.addSeries(HistogramSeries, {
+        priceScaleId: "ta-bg", lastValueVisible: false, priceLineVisible: false, priceFormat: { type: "volume" },
+      }));
+      bg.priceScale().applyOptions({ scaleMargins: { top: 0, bottom: 0 }, visible: false });
+      bg.setData(ov.data.map((p) => ({
+        time: p.time as Time,
+        value: p.value === 0 ? 0 : 1,
+        color: p.value > 0 ? "rgba(38,166,154,0.08)" : p.value < 0 ? "rgba(239,83,80,0.08)" : "rgba(0,0,0,0)",
+      })));
+    }
 
     // main price series
     let main: ISeriesApi<SeriesType>;
@@ -306,6 +329,48 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       add(chart.addSeries(LineSeries, { ...thin, color: "#f59e0b" }, pane)).setData(lineData(bars, m.signal));
       pane++;
     }
+    // technical-analysis rule overlays (each sub-pane key gets its own pane)
+    const paneIndex = new Map<string, number>();
+    const paneFor = (key: string) => {
+      if (key === "main") return 0;
+      if (!paneIndex.has(key)) paneIndex.set(key, pane++);
+      return paneIndex.get(key)!;
+    };
+    const lineStyle = (s?: string) => (s === "dashed" ? LineStyle.Dashed : s === "dotted" ? LineStyle.Dotted : LineStyle.Solid);
+    for (const ov of taOverlays) {
+      if (ov.type === "line") {
+        const idx = paneFor(ov.pane);
+        const s = add(chart.addSeries(LineSeries, {
+          ...thin, color: ov.color, lineWidth: (ov.width ?? 1) as 1 | 2, lineStyle: lineStyle(ov.style),
+          ...(idx === 0 ? { priceFormat: fmt } : {}),
+        }, idx));
+        s.setData(ov.data.map((p) => ({ time: p.time as Time, value: p.value })));
+        for (const g of ov.guides ?? []) {
+          s.createPriceLine({ price: g, color: "#4b5563", lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: false, title: "" });
+        }
+      } else if (ov.type === "histogram") {
+        const s = add(chart.addSeries(HistogramSeries, {
+          priceLineVisible: false, lastValueVisible: false,
+          priceFormat: ov.pane === "volume" ? { type: "volume" } : { type: "price", precision: 3, minMove: 0.001 },
+        }, paneFor(ov.pane)));
+        s.setData(ov.data.map((p) => ({ time: p.time as Time, value: p.value, color: p.color })));
+      } else if (ov.type === "levels") {
+        for (const l of ov.levels) {
+          main.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: l.label });
+        }
+      } else if (ov.type === "segments") {
+        for (const sg of ov.segments) {
+          // the library needs strictly ascending times
+          const pts = sg.points.filter((p, i, a) => i === 0 || timeToMs(p.time as Time) > timeToMs(a[i - 1].time as Time));
+          if (pts.length < 2) continue;
+          add(chart.addSeries(LineSeries, {
+            ...thin, lineWidth: 1, color: sg.color, lineStyle: sg.dashed ? LineStyle.Dashed : LineStyle.Solid,
+            priceFormat: fmt,
+          })).setData(pts.map((p) => ({ time: p.time as Time, value: p.value })));
+        }
+      }
+    }
+
     const panes = chart.panes();
     panes.forEach((p, i) => p.setStretchFactor(i === 0 ? 4 : 1));
 
@@ -323,13 +388,22 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
 
     // suggestion markers + levels
     if (markers.length) {
-      createSeriesMarkers(main, markers.map((m): SeriesMarker<Time> =>
-        m.direction === "buy"
-          ? { time: m.time, position: "belowBar", color: C.accent, shape: "arrowUp", text: m.text }
-          : m.direction === "sell_short"
-          ? { time: m.time, position: "aboveBar", color: C.danger, shape: "arrowDown", text: m.text }
-          : { time: m.time, position: "aboveBar", color: "#6b7280", shape: "circle", size: 0.5 },
-      ));
+      const sorted = [...markers].sort((a, b) => timeToMs(a.time) - timeToMs(b.time));
+      createSeriesMarkers(main, sorted.map((m): SeriesMarker<Time> => {
+        const text = markerLabels || m.source === "app" ? m.text : "";
+        if (m.source === "app") {
+          // the app's own suggestions: squares
+          return m.side === "buy"
+            ? { time: m.time, position: "belowBar", color: C.accent, shape: "square", text: m.text }
+            : m.side === "sell"
+            ? { time: m.time, position: "aboveBar", color: C.danger, shape: "square", text: m.text }
+            : { time: m.time, position: "aboveBar", color: "#6b7280", shape: "circle", size: 0.5 };
+        }
+        // technical-analysis rule signals: arrows
+        return m.side === "buy"
+          ? { time: m.time, position: "belowBar", color: "#22c55e", shape: "arrowUp", text }
+          : { time: m.time, position: "aboveBar", color: "#f97316", shape: "arrowDown", text };
+      }));
     }
     for (const l of levels) {
       main.createPriceLine({
@@ -350,7 +424,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 5 });
     }
     lastKey.current = seriesKey;
-  }, [computed, bars, seriesKey, chartType, indicators, scaleMode, drawings, markers, levels, priceDecimals]);
+  }, [computed, bars, seriesKey, chartType, indicators, scaleMode, drawings, markers, levels, taOverlays, markerLabels, priceDecimals]);
 
   useImperativeHandle(ref, () => ({
     fit: () => chartRef.current?.timeScale().fitContent(),
@@ -383,6 +457,16 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     rows.push({ label: "MACD", value: `${m.line[idx]?.toFixed(3) ?? "—"} / ${m.signal[idx]?.toFixed(3) ?? "—"}`, color: "#60a5fa" });
   }
   const change = bar && prev ? bar.close - prev.close : null;
+  const markersByTime = useMemo(() => {
+    const m = new Map<string, ChartMarker[]>();
+    for (const mk of markers) {
+      if (!mk.text) continue;
+      const k = String(mk.time);
+      m.set(k, [...(m.get(k) ?? []), mk]);
+    }
+    return m;
+  }, [markers]);
+  const barSignals = bar ? markersByTime.get(String(bar.time)) ?? [] : [];
 
   return (
     <div className="relative h-full w-full">
@@ -405,6 +489,15 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
             )}
             {indicators.volume && <span>Vol <b className="font-normal text-gray-100">{fmtVol(bar.volume)}</b></span>}
           </div>
+          {barSignals.length > 0 && (
+            <div className="flex flex-wrap gap-x-2">
+              {barSignals.map((s, i) => (
+                <span key={i} className={s.side === "buy" ? (s.source === "app" ? "text-accent" : "text-[#22c55e]") : s.side === "sell" ? (s.source === "app" ? "text-danger" : "text-[#f97316]") : "text-gray-400"}>
+                  {s.side === "buy" ? "▲" : s.side === "sell" ? "▼" : "•"} {s.text}
+                </span>
+              ))}
+            </div>
+          )}
           {rows.map((r) => (
             <div key={r.label}>
               <span style={{ color: r.color }}>{r.label}</span> <span className="text-gray-200">{r.value}</span>

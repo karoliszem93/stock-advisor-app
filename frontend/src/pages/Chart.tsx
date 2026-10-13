@@ -448,7 +448,9 @@ export default function Chart() {
           <TradingChart
             ref={chart}
             bars={bars}
-            seriesKey={`${ticker}:${interval}`}
+            // keyed on the data actually loaded (not the requested symbol), so the view
+            // snaps to the latest bars once the new symbol's prices arrive
+            seriesKey={`${data?.ticker ?? ""}:${data?.interval ?? ""}`}
             chartType={chartType}
             indicators={indicators}
             scaleMode={scaleMode}

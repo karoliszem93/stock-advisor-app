@@ -106,7 +106,8 @@ def chart_ta(ticker: str, interval: str = Query(default="1d")) -> dict:
     htf_rule, htf_label = _HTF[interval]
     outs = ta.evaluate(df, benchmark=bench_series, benchmark_name=bench[1] if bench else None,
                        htf_rule=htf_rule, htf_label=htf_label)
-    out = ta.serialize(outs, list(df["time"]), start=max(0, len(df) - _TA_MAX_BARS))
+    out = ta.serialize(outs, list(df["time"]), start=max(0, len(df) - _TA_MAX_BARS),
+                       closes=df["close"].to_numpy(float))
     tech = ta.aggregate_technical(outs)
     mr = ta.aggregate_mean_reversion(outs)
     out["summary"] = {

@@ -19,6 +19,7 @@ import TradingChart, {
   type ChartMarker,
   type ChartType,
   type Drawing,
+  type NamedOverlay,
   type DrawMode,
   type Indicators,
   type RangeKey,
@@ -293,10 +294,11 @@ export default function Chart() {
   }, [ta, showSignals, rulesOn]);
   const allMarkers = useMemo(() => [...markers, ...taMarkers], [markers, taMarkers]);
 
-  const taOverlays = useMemo<TAOverlay[]>(
-    () => (ta ? [...rulesOn].flatMap((id) => ta.overlays[id] ?? []) : []),
-    [ta, rulesOn],
-  );
+  const taOverlays = useMemo<NamedOverlay[]>(() => {
+    if (!ta) return [];
+    const names = new Map(ta.rules.map((r) => [r.id, r.name]));
+    return [...rulesOn].flatMap((id) => (ta.overlays[id] ?? []).map((o) => ({ ...o, rule: names.get(id) })));
+  }, [ta, rulesOn]);
 
   const toggleRule = useCallback((id: string) => {
     setRulesOn((prev) => {
@@ -476,6 +478,7 @@ export default function Chart() {
           onShowSignals={setShowSignals}
           labels={markerLabels}
           onLabels={setMarkerLabels}
+          onFocus={(time) => chart.current?.focus(time as Time)}
         />
       )}
       </div>

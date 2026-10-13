@@ -235,6 +235,18 @@ export interface TARule {
   status: string;
   available: boolean;
   meta: Record<string, unknown>;
+  /** track record of this rule's signals on this ticker (price move after each signal) */
+  stats: Record<"buy" | "sell", SignalStats> | null;
+}
+
+export interface SignalStats {
+  n: number;
+  n_eval_5: number;
+  n_eval_20: number;
+  win_5?: number;
+  win_20?: number;
+  avg_5?: number;
+  avg_20?: number;
 }
 
 export interface TAEvent {
@@ -242,12 +254,18 @@ export interface TAEvent {
   rule: string;
   side: "buy" | "sell";
   label: string;
+  price?: number;
+  /** price change 5 / 20 bars after the signal (null = too recent) */
+  ret_5?: number | null;
+  ret_20?: number | null;
 }
 
 export interface TAData {
   rules: TARule[];
   events: TAEvent[];
   overlays: Record<string, TAOverlay[]>;
+  /** how often ANY bar was followed by a rise — the bar a rule has to beat */
+  base_rate?: { up_5?: number; avg_5?: number; up_20?: number; avg_20?: number };
   summary: {
     technical: { score: number; amplifier: number; htf_state: number; htf_conflict: boolean };
     mean_reversion: { score: number };

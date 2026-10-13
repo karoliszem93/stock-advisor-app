@@ -763,11 +763,42 @@ def aggregate_mean_reversion(outs: dict[str, RuleOutput]) -> dict[str, Any]:
     return {"score": float(np.clip(s, -1, 1)), "notes": [r.status for r in rules if r.score]}
 
 
-def serialize(outs: dict[str, RuleOutput], times: list, start: int = 0) -> dict:
+FORWARD_BARS = (5, 20)
+
+
+def _forward_returns(closes: np.ndarray, i: int) -> dict[str, float | None]:
+    """Price change N bars after bar i — for judging past signals, never for generating them."""
+    out = {}
+    for n in FORWARD_BARS:
+        out[f"ret_{n}"] = float(closes[i + n] / closes[i] - 1) if i + n < len(closes) and closes[i] else None
+    return out
+
+
+def _signal_stats(events: list[dict]) -> dict:
+    """Track record of one rule's signals: count, how often they 'worked'
+    (price up after a buy / down after a sell) and the average move."""
+    stats = {}
+    for side in ("buy", "sell"):
+        evs = [e for e in events if e["side"] == side]
+        s = {"n": len(evs)}
+        for n in FORWARD_BARS:
+            rets = [e[f"ret_{n}"] for e in evs if e.get(f"ret_{n}") is not None]
+            s[f"n_eval_{n}"] = len(rets)
+            if rets:
+                worked = [r > 0 if side == "buy" else r < 0 for r in rets]
+                s[f"win_{n}"] = sum(worked) / len(rets)
+                s[f"avg_{n}"] = float(np.mean(rets))
+        stats[side] = s
+    return stats
+
+
+def serialize(outs: dict[str, RuleOutput], times: list, start: int = 0, closes: np.ndarray | None = None) -> dict:
     """JSON for the chart: per-rule info, events and overlays with real bar times.
 
     Only bars from `start` on are emitted (indicators are still computed on
-    the full history, so values are warmed up)."""
+    the full history, so values are warmed up). With `closes`, each event
+    also carries the price at the signal and the move 5 / 20 bars later,
+    and each rule gets its signal track record."""
     def series(values: pd.Series, colors: list | None = None):
         out = []
         arr = values.to_numpy(dtype=float, na_value=np.nan)
@@ -782,14 +813,23 @@ def serialize(outs: dict[str, RuleOutput], times: list, start: int = 0) -> dict:
 
     rules, events, overlays = [], [], {}
     for o in outs.values():
+        evs = []
+        for e in o.events:
+            if e["i"] < start:
+                continue
+            ev = {"time": times[e["i"]], "rule": o.id, "side": e["side"], "label": e["label"]}
+            if closes is not None:
+                ev["price"] = float(closes[e["i"]])
+                ev.update(_forward_returns(closes, e["i"]))
+            evs.append(ev)
+        events += evs
         rules.append({
             "id": o.id, "name": o.name, "category": o.category, "module": o.module,
             "description": o.description, "score": round(o.score, 4), "state": o.state,
             "status": o.status, "available": o.available,
             "meta": {k: v for k, v in o.meta.items() if k in ("support", "resistance", "adx", "amplifier", "htf_state")},
+            "stats": _signal_stats(evs) if closes is not None else None,
         })
-        events += [{"time": times[e["i"]], "rule": o.id, "side": e["side"], "label": e["label"]}
-                   for e in o.events if e["i"] >= start]
         ser = []
         for ov in o.overlays:
             t = ov["type"]
@@ -810,4 +850,14 @@ def serialize(outs: dict[str, RuleOutput], times: list, start: int = 0) -> dict:
                 ser.append({"type": "segments", "segments": segs})
         overlays[o.id] = ser
     events.sort(key=lambda e: (str(e["time"]) if isinstance(e["time"], str) else e["time"]))
-    return {"rules": rules, "events": events, "overlays": overlays}
+    out = {"rules": rules, "events": events, "overlays": overlays}
+    if closes is not None:
+        # base rate: how often ANY bar was followed by a rise — a rule is only useful if it beats this
+        base = {}
+        for n in FORWARD_BARS:
+            fwd = closes[start + n:] / closes[start:len(closes) - n] - 1 if len(closes) - n > start else np.array([])
+            if len(fwd):
+                base[f"up_{n}"] = float((fwd > 0).mean())
+                base[f"avg_{n}"] = float(fwd.mean())
+        out["base_rate"] = base
+    return out

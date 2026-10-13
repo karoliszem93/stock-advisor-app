@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import {
   AreaSeries,
   BarSeries,
@@ -56,10 +56,15 @@ export interface ChartLevel {
   title: string;
 }
 
+/** A rule overlay plus the name of the rule it belongs to (for the legend). */
+export type NamedOverlay = TAOverlay & { rule?: string };
+
 export interface TradingChartHandle {
   setRange: (range: RangeKey) => void;
   fit: () => void;
   screenshot: () => HTMLCanvasElement | null;
+  /** scroll to a bar and put the crosshair on it (legend then shows that bar) */
+  focus: (time: Time) => void;
 }
 
 interface Props {
@@ -75,7 +80,7 @@ interface Props {
   markers: ChartMarker[];
   levels: ChartLevel[];
   /** overlays of the enabled technical-analysis rules */
-  taOverlays: TAOverlay[];
+  taOverlays: NamedOverlay[];
   /** draw marker text on the chart (otherwise names show in the legend on hover) */
   markerLabels: boolean;
   priceDecimals: number;
@@ -92,6 +97,8 @@ const C = {
   warn: "#fbbf24",
   danger: "#f87171",
   drawing: "#60a5fa",
+  taBuy: "#22c55e",
+  taSell: "#f97316",
 };
 
 const OVERLAYS: { key: keyof Indicators; label: string; color: string; calc: (c: number[]) => Series }[] = [
@@ -101,6 +108,38 @@ const OVERLAYS: { key: keyof Indicators; label: string; color: string; calc: (c:
   { key: "ema9", label: "EMA 9", color: "#22d3ee", calc: (c) => ema(c, 9) },
   { key: "ema21", label: "EMA 21", color: "#a3e635", calc: (c) => ema(c, 21) },
 ];
+
+/** Title + plain-language reading guide for each sub-pane a rule can open. */
+const PANE_INFO: Record<string, { title: string; note: string }> = {
+  rsi: {
+    title: "RSI (14)",
+    note: "Momentum 0–100. Guides 70/55/45/30: below 30 oversold · 30–45 in an uptrend = pullback buy zone · 55–70 in a downtrend = bounce sell zone · above 70 overbought.",
+  },
+  macd: {
+    title: "MACD (12, 26, 9)",
+    note: "Blue = MACD line, orange = signal line, bars = their difference. Blue crossing above orange = bullish, below = bearish.",
+  },
+  adx: {
+    title: "ADX (14)",
+    note: "White = trend strength (above the dashed 25 = strong trend). Green +DI above red −DI = buyers in control, the reverse = sellers.",
+  },
+  obv: {
+    title: "On-balance volume",
+    note: "Running total of volume (added on up days, subtracted on down days) and its 20-EMA. Rising with price = volume confirms the move.",
+  },
+  rs: {
+    title: "Relative strength",
+    note: "Price ÷ benchmark, rebased to 100. Above its dashed 50-bar average = outperforming the market, below = lagging.",
+  },
+  z: {
+    title: "Z-score (20)",
+    note: "Distance from the 20-bar average in standard deviations. Beyond ±2 = stretched; mean reversion expects a snap back.",
+  },
+  volume: {
+    title: "Volume",
+    note: "Bright bars = unusual volume (≥ 2.5× the 20-bar average, orange line). Up-bar spikes = buying pressure, down-bar spikes = selling.",
+  },
+};
 
 const RANGE_DAYS: Record<Exclude<RangeKey, "YTD" | "All">, number> = {
   "1D": 1, "5D": 5, "1M": 31, "3M": 92, "6M": 183, "1Y": 365, "5Y": 1826,
@@ -119,16 +158,46 @@ function timeToMs(t: Time): number {
 }
 
 function fmtVol(v: number): string {
-  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
-  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
-  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  const a = Math.abs(v);
+  if (a >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
   return String(Math.round(v));
 }
 
-interface LegendRow { label: string; value: string; color: string }
+// ---- legend model ----
+type Swatch = "line" | "dashed" | "dotted" | "hist" | "shade" | "level" | "arrow" | "square" | "band";
+
+interface LegendItem {
+  label: string;
+  color: string;
+  swatch: Swatch;
+  /** series whose value at the crosshair is shown next to the label */
+  series?: ISeriesApi<SeriesType>;
+  last?: number;
+  format?: (v: number) => string;
+}
+
+interface PaneLegend {
+  title?: string;
+  note?: string;
+  items: LegendItem[];
+}
+
+function SwatchIcon({ s, color }: { s: Swatch; color: string }) {
+  if (s === "arrow") return <span style={{ color }} className="text-[9px]">▲▼</span>;
+  if (s === "square") return <span className="inline-block h-2 w-2" style={{ background: color }} />;
+  if (s === "shade") return <span className="inline-block h-2.5 w-3 rounded-sm" style={{ background: color }} />;
+  if (s === "hist") return <span className="inline-block h-2.5 w-1.5" style={{ background: color }} />;
+  const style = s === "dashed" || s === "level" ? "dashed" : s === "dotted" ? "dotted" : "solid";
+  return <span className="inline-block w-3.5" style={{ borderTop: `2px ${style} ${color}` }} />;
+}
 
 const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart(props, ref) {
-  const { bars, seriesKey, chartType, indicators, scaleMode, drawings, drawMode, markers, levels, taOverlays, markerLabels, priceDecimals } = props;
+  const {
+    bars, seriesKey, chartType, indicators, scaleMode, drawings, drawMode, markers, levels, taOverlays,
+    markerLabels, priceDecimals,
+  } = props;
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRefs = useRef<ISeriesApi<SeriesType>[]>([]);
@@ -140,6 +209,11 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
   const onAddRef = useRef(props.onAddDrawing);
   drawModeRef.current = drawMode;
   onAddRef.current = props.onAddDrawing;
+
+  const [legends, setLegends] = useState<PaneLegend[]>([]);
+  const [paneTops, setPaneTops] = useState<number[]>([]);
+  const [hoverVals, setHoverVals] = useState<Map<ISeriesApi<SeriesType>, number> | null>(null);
+  const [legendOpen, setLegendOpen] = useState(true);
 
   // ---- indicator values, computed once per data/config change (also feed the legend) ----
   const computed = useMemo(() => {
@@ -157,6 +231,16 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
   computedRef.current = computed;
 
   const [legendIdx, setLegendIdx] = useState<number | null>(null);
+  // bar pinned by focus(); programmatic crosshair events are ignored until the mouse really moves
+  const focusLock = useRef<number | null>(null);
+
+  // where each pane starts (for its legend), re-measured on build and resize
+  const measurePanes = useCallback(() => {
+    const chart = chartRef.current;
+    const box = container.current?.getBoundingClientRect();
+    if (!chart || !box) return;
+    setPaneTops(chart.panes().map((p) => (p.getHTMLElement()?.getBoundingClientRect().top ?? box.top) - box.top));
+  }, []);
 
   // ---- create the chart once ----
   useEffect(() => {
@@ -178,11 +262,22 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     chartRef.current = chart;
 
     const onMove = (p: MouseEventParams<Time>) => {
+      if (focusLock.current !== null) {
+        if (!p.sourceEvent) return; // scroll / setCrosshairPosition, not the user
+        focusLock.current = null;
+      }
       if (p.time === undefined) {
         setLegendIdx(null);
+        setHoverVals(null);
         return;
       }
       setLegendIdx(computedRef.current.indexByTime.get(String(p.time)) ?? null);
+      const vals = new Map<ISeriesApi<SeriesType>, number>();
+      p.seriesData.forEach((d, s) => {
+        const v = (d as { value?: number; close?: number }).value ?? (d as { close?: number }).close;
+        if (v != null) vals.set(s, v);
+      });
+      setHoverVals(vals);
     };
     const onClick = (p: MouseEventParams<Time>) => {
       const mode = drawModeRef.current;
@@ -205,13 +300,16 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     };
     chart.subscribeCrosshairMove(onMove);
     chart.subscribeClick(onClick);
+    const ro = new ResizeObserver(() => measurePanes());
+    ro.observe(container.current);
     return () => {
+      ro.disconnect();
       chart.unsubscribeCrosshairMove(onMove);
       chart.unsubscribeClick(onClick);
       chart.remove();
       chartRef.current = null;
     };
-  }, []);
+  }, [measurePanes]);
 
   // leaving draw mode drops a half-finished trend line
   useEffect(() => {
@@ -230,7 +328,10 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
     for (const s of seriesRefs.current) chart.removeSeries(s);
     seriesRefs.current = [];
     while (chart.panes().length > 1) chart.removePane(chart.panes().length - 1);
-    if (!bars.length) return;
+    if (!bars.length) {
+      setLegends([]);
+      return;
+    }
     // time of day only matters on intraday charts (numeric times)
     chart.applyOptions({ timeScale: { timeVisible: typeof bars[0].time === "number" } });
 
@@ -239,7 +340,16 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       return s;
     };
     const fmt = { type: "price" as const, precision: priceDecimals, minMove: 1 / 10 ** priceDecimals };
+    const pf = (v: number) => v.toFixed(priceDecimals);
     const { display } = computed;
+
+    const legend: PaneLegend[] = [{ items: [] }];
+    const reg = (pane: number, item: LegendItem) => {
+      while (legend.length <= pane) legend.push({ items: [] });
+      legend[pane].items.push(item);
+    };
+    const lastOf = (data: { value: number }[]) => (data.length ? data[data.length - 1].value : undefined);
+    const ruleTag = (rule?: string) => (rule ? ` · ${rule}` : "");
 
     // higher-timeframe trend shading, added first so it sits under the candles
     for (const ov of taOverlays) {
@@ -253,6 +363,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
         value: p.value === 0 ? 0 : 1,
         color: p.value > 0 ? "rgba(38,166,154,0.08)" : p.value < 0 ? "rgba(239,83,80,0.08)" : "rgba(0,0,0,0)",
       })));
+      reg(0, { label: `Background: green = ${ov.rule ?? "higher-timeframe trend"} up, red = down`, color: "rgba(38,166,154,0.35)", swatch: "shade" });
     }
 
     // main price series
@@ -291,32 +402,47 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
         priceFormat: { type: "volume" }, priceScaleId: "vol", lastValueVisible: false, priceLineVisible: false,
       }));
       vol.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-      vol.setData(bars.map((b) => ({
+      const vd = bars.map((b) => ({
         time: b.time as Time,
         value: b.volume,
         color: b.close >= b.open ? "rgba(38,166,154,0.45)" : "rgba(239,83,80,0.45)",
-      })));
+      }));
+      vol.setData(vd);
+      reg(0, { label: "Volume (bottom bars)", color: "rgba(156,163,175,0.6)", swatch: "hist", series: vol, last: lastOf(vd), format: fmtVol });
     }
 
     const thin = { lineWidth: 1 as const, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false };
     for (const o of computed.overlays) {
-      add(chart.addSeries(LineSeries, { ...thin, color: o.color, priceFormat: fmt })).setData(lineData(bars, o.values));
+      const s = add(chart.addSeries(LineSeries, { ...thin, color: o.color, priceFormat: fmt }));
+      const d = lineData(bars, o.values);
+      s.setData(d);
+      reg(0, { label: `${o.label} · indicator`, color: o.color, swatch: "line", series: s, last: lastOf(d), format: pf });
     }
     if (computed.bb) {
       const band = { ...thin, color: "rgba(167,139,250,0.8)", priceFormat: fmt };
-      add(chart.addSeries(LineSeries, band)).setData(lineData(bars, computed.bb.upper));
-      add(chart.addSeries(LineSeries, band)).setData(lineData(bars, computed.bb.lower));
+      const up = add(chart.addSeries(LineSeries, band));
+      const du = lineData(bars, computed.bb.upper);
+      up.setData(du);
+      const lo = add(chart.addSeries(LineSeries, band));
+      const dl = lineData(bars, computed.bb.lower);
+      lo.setData(dl);
       add(chart.addSeries(LineSeries, { ...band, lineStyle: LineStyle.Dashed })).setData(lineData(bars, computed.bb.mid));
+      reg(0, { label: "Bollinger upper (20, 2) · indicator", color: "rgba(167,139,250,0.9)", swatch: "line", series: up, last: lastOf(du), format: pf });
+      reg(0, { label: "Bollinger lower", color: "rgba(167,139,250,0.9)", swatch: "line", series: lo, last: lastOf(dl), format: pf });
     }
 
-    // sub-panes
+    // sub-panes from the Indicators menu
     let pane = 1;
     if (computed.rsi) {
       const r = add(chart.addSeries(LineSeries, { lineWidth: 1, color: "#c084fc", priceLineVisible: false }, pane));
-      r.setData(lineData(bars, computed.rsi));
+      const d = lineData(bars, computed.rsi);
+      r.setData(d);
       for (const lvl of [70, 30]) {
         r.createPriceLine({ price: lvl, color: "#4b5563", lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: false, title: "" });
       }
+      reg(pane, { label: "RSI 14", color: "#c084fc", swatch: "line", series: r, last: lastOf(d), format: (v) => v.toFixed(1) });
+      legend[pane].title = "RSI (14) · indicator";
+      legend[pane].note = "Above 70 = overbought, below 30 = oversold (dashed lines).";
       pane++;
     }
     if (computed.macd) {
@@ -325,38 +451,75 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       h.setData(m.hist.flatMap((v, i) =>
         v == null ? [] : [{ time: bars[i].time as Time, value: v, color: v >= 0 ? "rgba(38,166,154,0.6)" : "rgba(239,83,80,0.6)" }],
       ));
-      add(chart.addSeries(LineSeries, { ...thin, color: "#60a5fa" }, pane)).setData(lineData(bars, m.line));
-      add(chart.addSeries(LineSeries, { ...thin, color: "#f59e0b" }, pane)).setData(lineData(bars, m.signal));
+      const ml = add(chart.addSeries(LineSeries, { ...thin, color: "#60a5fa" }, pane));
+      const dm = lineData(bars, m.line);
+      ml.setData(dm);
+      const ms = add(chart.addSeries(LineSeries, { ...thin, color: "#f59e0b" }, pane));
+      const ds = lineData(bars, m.signal);
+      ms.setData(ds);
+      reg(pane, { label: "MACD", color: "#60a5fa", swatch: "line", series: ml, last: lastOf(dm), format: (v) => v.toFixed(3) });
+      reg(pane, { label: "Signal", color: "#f59e0b", swatch: "line", series: ms, last: lastOf(ds), format: (v) => v.toFixed(3) });
+      legend[pane].title = "MACD (12, 26, 9) · indicator";
+      legend[pane].note = PANE_INFO.macd.note;
       pane++;
     }
+
     // technical-analysis rule overlays (each sub-pane key gets its own pane)
     const paneIndex = new Map<string, number>();
-    const paneFor = (key: string) => {
+    const paneFor = (key: string, rule?: string) => {
       if (key === "main") return 0;
-      if (!paneIndex.has(key)) paneIndex.set(key, pane++);
+      if (!paneIndex.has(key)) {
+        const idx = pane++;
+        paneIndex.set(key, idx);
+        while (legend.length <= idx) legend.push({ items: [] });
+        const info = PANE_INFO[key];
+        legend[idx].title = `${info?.title ?? key}${rule ? ` · rule: ${rule}` : ""}`;
+        legend[idx].note = info?.note;
+      }
       return paneIndex.get(key)!;
     };
     const lineStyle = (s?: string) => (s === "dashed" ? LineStyle.Dashed : s === "dotted" ? LineStyle.Dotted : LineStyle.Solid);
+    let hasLevels = false;
+    let hasPatterns = false;
     for (const ov of taOverlays) {
       if (ov.type === "line") {
-        const idx = paneFor(ov.pane);
+        const idx = paneFor(ov.pane, ov.rule);
         const s = add(chart.addSeries(LineSeries, {
           ...thin, color: ov.color, lineWidth: (ov.width ?? 1) as 1 | 2, lineStyle: lineStyle(ov.style),
           ...(idx === 0 ? { priceFormat: fmt } : {}),
         }, idx));
-        s.setData(ov.data.map((p) => ({ time: p.time as Time, value: p.value })));
+        const d = ov.data.map((p) => ({ time: p.time as Time, value: p.value }));
+        s.setData(d);
         for (const g of ov.guides ?? []) {
           s.createPriceLine({ price: g, color: "#4b5563", lineStyle: LineStyle.Dashed, lineWidth: 1, axisLabelVisible: false, title: "" });
         }
+        reg(idx, {
+          label: idx === 0 ? `${ov.name}${ruleTag(ov.rule)}` : ov.name,
+          color: ov.color,
+          swatch: ov.style === "dashed" ? "dashed" : ov.style === "dotted" ? "dotted" : "line",
+          series: s,
+          last: lastOf(d),
+          format: idx === 0 ? pf : ov.pane === "volume" || ov.pane === "obv" ? fmtVol : (v) => v.toFixed(2),
+        });
       } else if (ov.type === "histogram") {
+        const idx = paneFor(ov.pane, ov.rule);
         const s = add(chart.addSeries(HistogramSeries, {
           priceLineVisible: false, lastValueVisible: false,
           priceFormat: ov.pane === "volume" ? { type: "volume" } : { type: "price", precision: 3, minMove: 0.001 },
-        }, paneFor(ov.pane)));
-        s.setData(ov.data.map((p) => ({ time: p.time as Time, value: p.value, color: p.color })));
+        }, idx));
+        const d = ov.data.map((p) => ({ time: p.time as Time, value: p.value, color: p.color }));
+        s.setData(d);
+        reg(idx, {
+          label: ov.name, color: "rgba(156,163,175,0.7)", swatch: "hist", series: s, last: lastOf(d),
+          format: ov.pane === "volume" ? fmtVol : (v) => v.toFixed(3),
+        });
       } else if (ov.type === "levels") {
         for (const l of ov.levels) {
           main.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: LineStyle.Solid, axisLabelVisible: true, title: l.label });
+        }
+        if (ov.levels.length && !hasLevels) {
+          hasLevels = true;
+          reg(0, { label: `S1–S3 support (green) / R1–R3 resistance (red), (n×) = touches${ruleTag(ov.rule)}`, color: C.up, swatch: "line" });
         }
       } else if (ov.type === "segments") {
         for (const sg of ov.segments) {
@@ -367,6 +530,10 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
             ...thin, lineWidth: 1, color: sg.color, lineStyle: sg.dashed ? LineStyle.Dashed : LineStyle.Solid,
             priceFormat: fmt,
           })).setData(pts.map((p) => ({ time: p.time as Time, value: p.value })));
+        }
+        if (ov.segments.length && !hasPatterns) {
+          hasPatterns = true;
+          reg(0, { label: `Pattern outlines (dashed = neckline / flag channel; green bullish, red bearish)${ruleTag(ov.rule)}`, color: C.up, swatch: "line" });
         }
       }
     }
@@ -385,25 +552,30 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
           .setData(pts.map((p) => ({ time: p.time, value: p.price })));
       }
     }
+    if (drawings.length) reg(0, { label: "Your drawings", color: C.drawing, swatch: "line" });
 
-    // suggestion markers + levels
+    // markers: the app's suggestions (squares) + rule signals (arrows)
     if (markers.length) {
       const sorted = [...markers].sort((a, b) => timeToMs(a.time) - timeToMs(b.time));
       createSeriesMarkers(main, sorted.map((m): SeriesMarker<Time> => {
         const text = markerLabels || m.source === "app" ? m.text : "";
         if (m.source === "app") {
-          // the app's own suggestions: squares
           return m.side === "buy"
             ? { time: m.time, position: "belowBar", color: C.accent, shape: "square", text: m.text }
             : m.side === "sell"
             ? { time: m.time, position: "aboveBar", color: C.danger, shape: "square", text: m.text }
             : { time: m.time, position: "aboveBar", color: "#6b7280", shape: "circle", size: 0.5 };
         }
-        // technical-analysis rule signals: arrows
         return m.side === "buy"
-          ? { time: m.time, position: "belowBar", color: "#22c55e", shape: "arrowUp", text }
-          : { time: m.time, position: "aboveBar", color: "#f97316", shape: "arrowDown", text };
+          ? { time: m.time, position: "belowBar", color: C.taBuy, shape: "arrowUp", text }
+          : { time: m.time, position: "aboveBar", color: C.taSell, shape: "arrowDown", text };
       }));
+      if (markers.some((m) => m.source === "ta")) {
+        reg(0, { label: "Rule signals: green ▲ buy / orange ▼ sell — hover a bar to see which rule", color: C.taBuy, swatch: "arrow" });
+      }
+      if (markers.some((m) => m.source === "app")) {
+        reg(0, { label: "App suggestions (B = buy, S = sell; grey dot = avoid)", color: C.accent, swatch: "square" });
+      }
     }
     for (const l of levels) {
       main.createPriceLine({
@@ -412,6 +584,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
         lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: true, title: l.title,
       });
     }
+    if (levels.length) reg(0, { label: "Latest app suggestion: entry (grey) / stop (red) / target (green)", color: "#9ca3af", swatch: "level" });
 
     chart.priceScale("right").applyOptions({
       mode: scaleMode === "log" ? PriceScaleMode.Logarithmic : scaleMode === "percent" ? PriceScaleMode.Percentage : PriceScaleMode.Normal,
@@ -424,7 +597,20 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - 150), to: bars.length + 5 });
     }
     lastKey.current = seriesKey;
-  }, [computed, bars, seriesKey, chartType, indicators, scaleMode, drawings, markers, levels, taOverlays, markerLabels, priceDecimals]);
+    setLegends(legend);
+
+    // pane positions settle after layout; re-measure then, and whenever a pane is resized
+    const raf = requestAnimationFrame(measurePanes);
+    const ro = new ResizeObserver(() => measurePanes());
+    chart.panes().forEach((p) => {
+      const el = p.getHTMLElement();
+      if (el) ro.observe(el);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [computed, bars, seriesKey, chartType, indicators, scaleMode, drawings, markers, levels, taOverlays, markerLabels, priceDecimals, measurePanes]);
 
   useImperativeHandle(ref, () => ({
     fit: () => chartRef.current?.timeScale().fitContent(),
@@ -441,21 +627,27 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
       if (fromIdx <= 0) return chart.timeScale().fitContent();
       chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: bars.length + 3 });
     },
+    focus: (time: Time) => {
+      const chart = chartRef.current;
+      const main = mainRef.current;
+      const i = computedRef.current.indexByTime.get(String(time));
+      if (!chart || !main || i === undefined) return;
+      focusLock.current = i;
+      setLegendIdx(i);
+      setHoverVals(null);
+      chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, i - 60), to: Math.min(bars.length + 5, i + 40) });
+      // the range applies on the next frames; place the crosshair once the bar has moved into view
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (focusLock.current === i) chart.setCrosshairPosition(bars[i].close, time, main);
+      }));
+    },
   }), [bars]);
 
-  // ---- legend (OHLC + indicator values at the crosshair, else the last bar) ----
+  // ---- legend values (crosshair bar, else the last bar) ----
   const idx = legendIdx ?? bars.length - 1;
   const bar = bars[idx];
   const prev = idx > 0 ? bars[idx - 1] : null;
-  const rows: LegendRow[] = [];
   const f = (v: number | null | undefined) => (v == null ? "—" : v.toFixed(priceDecimals));
-  for (const o of computed.overlays) rows.push({ label: o.label, value: f(o.values[idx]), color: o.color });
-  if (computed.bb) rows.push({ label: "BB 20 2", value: `${f(computed.bb.upper[idx])} / ${f(computed.bb.lower[idx])}`, color: "#a78bfa" });
-  if (computed.rsi) rows.push({ label: "RSI 14", value: computed.rsi[idx]?.toFixed(1) ?? "—", color: "#c084fc" });
-  if (computed.macd) {
-    const m = computed.macd;
-    rows.push({ label: "MACD", value: `${m.line[idx]?.toFixed(3) ?? "—"} / ${m.signal[idx]?.toFixed(3) ?? "—"}`, color: "#60a5fa" });
-  }
   const change = bar && prev ? bar.close - prev.close : null;
   const markersByTime = useMemo(() => {
     const m = new Map<string, ChartMarker[]>();
@@ -468,6 +660,23 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
   }, [markers]);
   const barSignals = bar ? markersByTime.get(String(bar.time)) ?? [] : [];
 
+  const itemValue = (it: LegendItem) => {
+    if (!it.series || !it.format) return null;
+    const v = hoverVals ? hoverVals.get(it.series) : it.last;
+    return v == null ? "—" : it.format(v);
+  };
+
+  const ItemRow = ({ it }: { it: LegendItem }) => {
+    const v = itemValue(it);
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+        <SwatchIcon s={it.swatch} color={it.color} />
+        <span className="text-gray-400">{it.label}</span>
+        {v != null && <span className="text-gray-100">{v}</span>}
+      </span>
+    );
+  };
+
   return (
     <div className="relative h-full w-full">
       <div
@@ -475,9 +684,11 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
         className="h-full w-full"
         style={{ cursor: drawMode === "none" ? "default" : "crosshair" }}
       />
+
+      {/* price-pane legend */}
       {bar && (
-        <div className="pointer-events-none absolute left-2 top-2 z-10 text-xs font-mono leading-5">
-          <div className="flex flex-wrap gap-x-3 text-gray-300">
+        <div className="absolute left-2 top-2 z-10 max-w-[70%] text-xs font-mono leading-5">
+          <div className="pointer-events-none flex flex-wrap gap-x-3 text-gray-300">
             <span>O <b className="font-normal text-gray-100">{f(bar.open)}</b></span>
             <span>H <b className="font-normal text-gray-100">{f(bar.high)}</b></span>
             <span>L <b className="font-normal text-gray-100">{f(bar.low)}</b></span>
@@ -487,10 +698,10 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
                 {change >= 0 ? "+" : ""}{change.toFixed(priceDecimals)} ({((change / prev.close) * 100).toFixed(2)}%)
               </span>
             )}
-            {indicators.volume && <span>Vol <b className="font-normal text-gray-100">{fmtVol(bar.volume)}</b></span>}
           </div>
           {barSignals.length > 0 && (
-            <div className="flex flex-wrap gap-x-2">
+            <div className="pointer-events-none flex flex-wrap gap-x-2">
+              <span className="text-gray-500">Signals on this bar:</span>
               {barSignals.map((s, i) => (
                 <span key={i} className={s.side === "buy" ? (s.source === "app" ? "text-accent" : "text-[#22c55e]") : s.side === "sell" ? (s.source === "app" ? "text-danger" : "text-[#f97316]") : "text-gray-400"}>
                   {s.side === "buy" ? "▲" : s.side === "sell" ? "▼" : "•"} {s.text}
@@ -498,13 +709,43 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
               ))}
             </div>
           )}
-          {rows.map((r) => (
-            <div key={r.label}>
-              <span style={{ color: r.color }}>{r.label}</span> <span className="text-gray-200">{r.value}</span>
+          {legends[0]?.items.length ? (
+            <div className="mt-0.5 rounded bg-bg/85 px-1.5 py-0.5">
+              <button
+                className="text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300"
+                onClick={() => setLegendOpen((v) => !v)}
+              >
+                {legendOpen ? "▾" : "▸"} On the chart ({legends[0].items.length})
+              </button>
+              {legendOpen && (
+                <div className="pointer-events-none flex flex-col">
+                  {legends[0].items.map((it, i) => <ItemRow key={i} it={it} />)}
+                </div>
+              )}
             </div>
-          ))}
+          ) : null}
         </div>
       )}
+
+      {/* sub-pane legends: title, series with values, reading guide */}
+      {legends.slice(1).map((lg, k) => {
+        const top = paneTops[k + 1];
+        if (top == null || (!lg.title && !lg.items.length)) return null;
+        return (
+          <div
+            key={k}
+            className="pointer-events-none absolute left-2 z-10 max-w-[75%] rounded bg-bg/80 px-1.5 py-0.5 text-[11px] leading-4"
+            style={{ top: top + 3 }}
+          >
+            <div className="flex flex-wrap items-center gap-x-3 font-mono">
+              {lg.title && <span className="font-sans font-semibold text-gray-200">{lg.title}</span>}
+              {lg.items.map((it, i) => <ItemRow key={i} it={it} />)}
+            </div>
+            {lg.note && <div className="text-[10px] text-gray-500">{lg.note}</div>}
+          </div>
+        );
+      })}
+
       {drawMode !== "none" && (
         <div className="pointer-events-none absolute bottom-10 left-1/2 z-10 -translate-x-1/2 rounded bg-panel/90 px-3 py-1 text-xs text-gray-300 border border-border">
           {drawMode === "hline"

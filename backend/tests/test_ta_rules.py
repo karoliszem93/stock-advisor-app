@@ -141,3 +141,23 @@ def test_serialize_uses_bar_times_and_window():
     line = next(o for o in out["overlays"]["trend_ema200"] if o["type"] == "line")
     assert line["data"][0]["time"] >= df["time"].iloc[200]
     assert isinstance(pd.Timestamp(line["data"][0]["time"]), pd.Timestamp)
+
+
+def test_signal_track_record_uses_forward_prices():
+    df = ta.build_frame(_wavy(400), "date")
+    out = ta.serialize(ta.evaluate(df), list(df["time"]), start=100, closes=df["close"].to_numpy(float))
+    closes = df["close"].to_numpy(float)
+    idx = {t: i for i, t in enumerate(df["time"])}
+    for e in out["events"]:
+        i = idx[e["time"]]
+        assert e["price"] == pytest.approx(closes[i])
+        if i + 20 < len(closes):
+            assert e["ret_20"] == pytest.approx(closes[i + 20] / closes[i] - 1)
+        else:
+            assert e["ret_20"] is None  # too recent to judge
+    macd = next(r for r in out["rules"] if r["id"] == "macd")
+    buys = [e for e in out["events"] if e["rule"] == "macd" and e["side"] == "buy" and e["ret_20"] is not None]
+    assert macd["stats"]["buy"]["n_eval_20"] == len(buys)
+    if buys:
+        assert macd["stats"]["buy"]["win_20"] == pytest.approx(sum(e["ret_20"] > 0 for e in buys) / len(buys))
+    assert 0 <= out["base_rate"]["up_20"] <= 1

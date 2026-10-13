@@ -213,7 +213,21 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
   const [legends, setLegends] = useState<PaneLegend[]>([]);
   const [paneTops, setPaneTops] = useState<number[]>([]);
   const [hoverVals, setHoverVals] = useState<Map<ISeriesApi<SeriesType>, number> | null>(null);
-  const [legendOpen, setLegendOpen] = useState(true);
+  const [legendOpen, setLegendOpenState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("chart.legendOpen") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const setLegendOpen = (open: boolean) => {
+    setLegendOpenState(open);
+    try {
+      localStorage.setItem("chart.legendOpen", open ? "1" : "0");
+    } catch {
+      /* per-browser preference only */
+    }
+  };
 
   // ---- indicator values, computed once per data/config change (also feed the legend) ----
   const computed = useMemo(() => {
@@ -710,15 +724,27 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
             </div>
           )}
           {legends[0]?.items.length ? (
-            <div className="mt-0.5 rounded bg-bg/85 px-1.5 py-0.5">
+            <div className="mt-1 inline-flex max-w-full flex-col rounded border border-border bg-bg/90 px-2 py-1">
               <button
-                className="text-[10px] uppercase tracking-wider text-gray-500 hover:text-gray-300"
-                onClick={() => setLegendOpen((v) => !v)}
+                className="flex items-center gap-2 text-left font-sans text-[11px] text-gray-300 hover:text-white"
+                onClick={() => setLegendOpen(!legendOpen)}
+                title={legendOpen ? "Collapse the legend" : "Expand the legend"}
               >
-                {legendOpen ? "▾" : "▸"} On the chart ({legends[0].items.length})
+                <span className="text-gray-400">{legendOpen ? "▾" : "▸"}</span>
+                <span className="font-medium">Legend</span>
+                <span className="text-gray-500">({legends[0].items.length})</span>
+                {!legendOpen && (
+                  // collapsed: just the colours, names on hover
+                  <span className="flex items-center gap-1.5">
+                    {legends[0].items.map((it, i) => (
+                      <span key={i} title={it.label} className="inline-flex"><SwatchIcon s={it.swatch} color={it.color} /></span>
+                    ))}
+                  </span>
+                )}
+                <span className="ml-auto pl-3 text-[10px] text-gray-500">{legendOpen ? "hide" : "show"}</span>
               </button>
               {legendOpen && (
-                <div className="pointer-events-none flex flex-col">
+                <div className="pointer-events-none mt-0.5 flex flex-col">
                   {legends[0].items.map((it, i) => <ItemRow key={i} it={it} />)}
                 </div>
               )}
@@ -741,7 +767,7 @@ const TradingChart = forwardRef<TradingChartHandle, Props>(function TradingChart
               {lg.title && <span className="font-sans font-semibold text-gray-200">{lg.title}</span>}
               {lg.items.map((it, i) => <ItemRow key={i} it={it} />)}
             </div>
-            {lg.note && <div className="text-[10px] text-gray-500">{lg.note}</div>}
+            {lg.note && legendOpen && <div className="text-[10px] text-gray-500">{lg.note}</div>}
           </div>
         );
       })}

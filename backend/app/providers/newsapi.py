@@ -41,7 +41,9 @@ class NewsApiProvider(BaseProvider):
             return None
         full_params = dict(params)
         full_params["apiKey"] = s.newsapi_api_key
-        resp = self.client.get(f"{self.BASE}{path}", params=full_params)
+        # NewsAPI rejects the SEC-style "Name email" User-Agent the shared client sends
+        resp = self.client.get(f"{self.BASE}{path}", params=full_params,
+                               headers={"User-Agent": "stock-advisor/0.1"})
         if resp.is_error:
             # NewsAPI explains rejections (rate limit, plan limits) in the body
             try:

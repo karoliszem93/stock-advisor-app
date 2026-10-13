@@ -66,6 +66,11 @@ class GdeltProvider(BaseProvider):
             resp.raise_for_status()
             return resp
 
+    def get_tone_cached(self, query: str, days: int = 14) -> dict | None:
+        """Cached tone only (never calls GDELT) — for interactive pages that can't wait on throttling."""
+        q = f"({query})" if " OR " in query else query
+        return self.cache.get(f"tone:{q.lower()}:{days}")
+
     def get_tone(self, query: str, days: int = 14) -> dict | None:
         """{"avg_tone", "recent_tone" (last 3 days), "days_with_coverage"} or None if no coverage."""
         # GDELT needs OR-ed terms wrapped in parentheses

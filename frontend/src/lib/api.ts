@@ -275,6 +275,63 @@ export interface TAData {
   };
 }
 
+// ---- full analysis of one ticker (live, same scoring as the daily run) ----
+export interface ModuleResultFull {
+  module: string;
+  score: number | null;
+  direction: "bullish" | "bearish" | "neutral";
+  confidence: number;
+  horizon_weights: Record<Timeframe, number>;
+  raw: Record<string, any>;
+  notes: string[];
+  data_quality: "full" | "partial" | "missing";
+  errors: string[];
+}
+
+export interface CellContributor {
+  module: string;
+  score: number;
+  confidence: number;
+  horizon_w: number;
+  cell_w: number;
+  weighted_contrib: number;
+}
+
+export interface AnalysisCell {
+  risk_profile: RiskProfile;
+  timeframe: Timeframe;
+  direction: Direction;
+  score: number;
+  confidence: number;
+  filter_passed: boolean;
+  filter_reason: string | null;
+  contributors: CellContributor[];
+  notes: string[];
+}
+
+export interface FullAnalysis {
+  ticker: string;
+  name: string | null;
+  asset_type: "equity" | "etf";
+  currency: string | null;
+  exchange: string | null;
+  sector: string | null;
+  last_close: number;
+  last_date: string;
+  benchmark: string | null;
+  computed_at: string;
+  modules: Record<string, ModuleResultFull>;
+  profile_weights: Record<RiskProfile, Record<string, number>>;
+  cells: AnalysisCell[];
+  thresholds: { direction: number; min_confidence: number };
+  data_errors: Record<string, string>;
+  stored: {
+    date: string | null;
+    cells: { id: number; risk_profile: RiskProfile; timeframe: Timeframe; direction: Direction; confidence: number; headline: string | null }[];
+  };
+  cached: boolean;
+}
+
 export interface LogLine {
   id: number;
   ts: string;
@@ -364,6 +421,9 @@ export const api = {
     ta: (ticker: string, interval: ChartInterval) =>
       request<TAData>(`/api/chart/ta/${encodeURIComponent(ticker)}${qs({ interval })}`),
   },
+
+  analysis: (ticker: string, refresh = false) =>
+    request<FullAnalysis>(`/api/analysis/${encodeURIComponent(ticker)}${qs({ refresh: refresh ? "true" : undefined })}`),
 
   logs: (after = 0) =>
     request<{ lines: LogLine[]; last_id: number }>(`/api/logs/${qs({ after })}`),

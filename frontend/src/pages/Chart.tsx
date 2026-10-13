@@ -430,6 +430,13 @@ export default function Chart() {
         )}
 
         <div className="ml-auto flex items-center gap-1">
+          <button
+            className={btn(false)}
+            title="Every indicator behind the Buy / Avoid / Sell call — technical and non-technical"
+            onClick={() => navigate(`/analysis/${encodeURIComponent(ticker)}`)}
+          >
+            ▤ Full analysis
+          </button>
           <button className={btn(showPanel)} title="Technical rules panel" onClick={() => setShowPanel((v) => !v)}>
             ☰ Rules
           </button>

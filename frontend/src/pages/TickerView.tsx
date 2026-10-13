@@ -91,6 +91,11 @@ export default function TickerView() {
               Open chart →
             </Link>
           )}
+          {ticker && (
+            <Link to={`/analysis/${encodeURIComponent(ticker)}`} className="text-xs text-accent hover:underline">
+              Full analysis →
+            </Link>
+          )}
         </div>
         <p className="text-sm text-gray-400 mt-1">
           All suggestions across risk profiles and timeframes.{" "}

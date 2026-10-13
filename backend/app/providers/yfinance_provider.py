@@ -43,7 +43,7 @@ class YFinanceProvider(BaseProvider):
         Cached for 12h. The daily pipeline runs once a day so 12h is enough
         to dedupe within-day re-runs without serving stale prices.
         """
-        cache_key = f"ohlcv:v2:{ticker.upper()}:{lookback_days}"  # v2: empty bars dropped
+        cache_key = f"ohlcv:v3:{ticker.upper()}:{lookback_days}"  # v3: gaps filled from hourly
 
         def _fetch():
             end = date.today() + timedelta(days=1)
@@ -74,6 +74,9 @@ class YFinanceProvider(BaseProvider):
                     "dividend": _num(row.get("Dividends", 0.0)),
                     "split_ratio": _num(row.get("Stock Splits", 0.0)),
                 })
+            for d, hb in _missing_days_from_hourly(t, {b["date"] for b in bars}).items():
+                bars.append({**hb, "date": d, "adj_close": hb["close"], "dividend": 0.0, "split_ratio": 0.0})
+            bars.sort(key=lambda b: b["date"])
             return {"ticker": ticker.upper(), "currency": currency, "bars": bars}
 
         return self.cached_request(cache_key, ttl_seconds=12 * 3600, fetch=_fetch)
@@ -97,7 +100,7 @@ class YFinanceProvider(BaseProvider):
         if interval not in self.CHART_INTERVALS:
             raise ValueError(f"unsupported interval {interval!r}")
         yf_interval, period, ttl, resample = self.CHART_INTERVALS[interval]
-        cache_key = f"chart:{ticker.upper()}:{interval}"
+        cache_key = f"chart:v2:{ticker.upper()}:{interval}"
 
         def _fetch():
             t = yf.Ticker(ticker)
@@ -120,6 +123,11 @@ class YFinanceProvider(BaseProvider):
                     "close": _num(row["Close"]),
                     "volume": _num(row["Volume"]) or 0,
                 })
+            if interval == "1d":
+                have = {b["time"] for b in bars}
+                for d, hb in _missing_days_from_hourly(t, have).items():
+                    bars.append({**hb, "time": d})
+                bars.sort(key=lambda b: b["time"])
             currency = ""
             try:
                 currency = t.fast_info.get("currency") or ""
@@ -411,5 +419,43 @@ def _periods(df: pd.DataFrame | None, rows: dict[str, str]) -> list[dict]:
                 period[field] = _num(df.at[yahoo_row, col])
         if any(v is not None for k, v in period.items() if k != "date"):
             out.append(period)
+    return out
+
+
+def _missing_days_from_hourly(t: "yf.Ticker", have_dates: set[str]) -> dict[str, dict]:
+    """Daily bars Yahoo's daily history skipped, rebuilt from its hourly bars.
+
+    Yahoo's daily series for European listings sometimes misses a whole
+    session (e.g. Monday absent while Tuesday is present), so the analysis
+    would run on a stale close. Only completed sessions inside the daily
+    series' range are filled — never today's partial session.
+    """
+    if not have_dates:
+        return {}
+    try:
+        h = t.history(period="10d", interval="60m", auto_adjust=False)
+    except Exception:  # noqa: BLE001
+        return {}
+    if h is None or h.empty:
+        return {}
+    h = h.dropna(subset=["Close"])
+    tz = getattr(h.index, "tz", None)
+    today = pd.Timestamp.now(tz=tz).date() if tz is not None else date.today()
+    first, last = min(have_dates), max(have_dates)
+    out = {}
+    for d, g in h.groupby(h.index.date):
+        ds = d.isoformat()
+        if ds in have_dates or d >= today or ds < first or ds > last and len(g) < 6:
+            continue
+        out[ds] = {
+            "open": _num(g["Open"].iloc[0]),
+            "high": _num(g["High"].max()),
+            "low": _num(g["Low"].min()),
+            "close": _num(g["Close"].iloc[-1]),
+            "volume": _int(g["Volume"].sum()) or 0,
+            "filled_from_hourly": True,
+        }
+    if out:
+        log.info("%s: filled %d missing daily bar(s) from hourly data: %s", t.ticker, len(out), sorted(out))
     return out
 

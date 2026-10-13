@@ -175,7 +175,7 @@ def score_candidate(
         cell_score=round(cell_score, 4),
         cell_confidence=round(cell_confidence, 4),
         direction=direction,
-        contributors=contributors[:8],
+        contributors=contributors,  # all (≤13) so contributions add up to the cell score
         notes=notes[:8],
         raw_module_scores={
             name: _compact_module(r) for name, r in module_results.items()

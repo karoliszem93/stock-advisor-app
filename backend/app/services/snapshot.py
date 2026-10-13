@@ -128,8 +128,12 @@ def build_ticker_context(
     *,
     macro: dict | None = None,
     benchmark_ohlcv: dict | None = None,
+    live_gdelt: bool = True,
 ) -> AnalysisContext:
-    """Construct a full AnalysisContext for one ticker."""
+    """Construct a full AnalysisContext for one ticker.
+
+    live_gdelt=False uses only cached GDELT tone (interactive requests can't
+    wait on GDELT's throttling)."""
     errors: dict[str, str] = {}
     ticker = entry.ticker.upper()
 
@@ -187,7 +191,11 @@ def build_ticker_context(
     gdelt_tone = None
     tone_query = _news_query(entry, asset_type, info)
     if tone_query:
-        gdelt_tone = _safe(errors, "gdelt", lambda: get_provider("gdelt").get_tone(tone_query))
+        gdelt = get_provider("gdelt")
+        gdelt_tone = (
+            _safe(errors, "gdelt", lambda: gdelt.get_tone(tone_query)) if live_gdelt
+            else gdelt.get_tone_cached(tone_query)
+        )
 
     # ---- social (only if Reddit configured) ----
     social = []

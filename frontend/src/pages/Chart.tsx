@@ -7,6 +7,7 @@ import {
   TIMEFRAMES,
   type ChartData,
   type ChartInterval,
+  type FullAnalysis,
   type RiskProfile,
   type SuggestionDetail,
   type TAData,
@@ -144,6 +145,8 @@ export default function Chart() {
   const [error, setError] = useState<string | null>(null);
   const [indMenu, setIndMenu] = useState(false);
   const [ta, setTa] = useState<TAData | null>(null);
+  const [fullAnalysis, setFullAnalysis] = useState<FullAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [taLoading, setTaLoading] = useState(false);
   const [taError, setTaError] = useState<string | null>(null);
   const [rulesOn, setRulesOn] = useState<Set<string>>(() => new Set(loadRaw<string[]>("chart.taRules", DEFAULT_RULES)));
@@ -242,6 +245,21 @@ export default function Chart() {
       cancelled = true;
     };
   }, [ticker, interval, intraday]);
+
+  // every module's current reading (technical + non-technical) for the Signals tab
+  useEffect(() => {
+    if (!ticker || !showPanel) return;
+    let cancelled = false;
+    setFullAnalysis(null);
+    setAnalysisLoading(true);
+    api.analysis(ticker)
+      .then((d) => !cancelled && setFullAnalysis(d))
+      .catch(() => !cancelled && setFullAnalysis(null))
+      .finally(() => !cancelled && setAnalysisLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [ticker, showPanel]);
 
   // load the app's suggestions for this symbol
   useEffect(() => {
@@ -488,6 +506,11 @@ export default function Chart() {
           labels={markerLabels}
           onLabels={setMarkerLabels}
           onFocus={(time) => chart.current?.focus(time as Time)}
+          analysis={fullAnalysis}
+          analysisLoading={analysisLoading}
+          risk={risk}
+          tf={tf}
+          ticker={ticker}
         />
       )}
       </div>

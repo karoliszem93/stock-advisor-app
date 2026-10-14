@@ -1,5 +1,22 @@
 import { useMemo, useState } from "react";
-import type { TAData, TAEvent, TARule } from "../../lib/api";
+import { Link } from "react-router-dom";
+import type { FullAnalysis, RiskProfile, TAData, TAEvent, TARule, Timeframe } from "../../lib/api";
+import { GROUP_ORDER, MODULE_INFO, PROFILE_LABEL } from "../../lib/moduleInfo";
+
+type Call = "buy" | "sell" | "hold" | "na";
+const CALL_STYLE: Record<Call, string> = {
+  buy: "bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/40",
+  sell: "bg-[#f97316]/15 text-[#f97316] border-[#f97316]/40",
+  hold: "bg-gray-700/40 text-gray-300 border-gray-600/50",
+  na: "text-gray-600 border-gray-700",
+};
+function CallChip({ call }: { call: Call }) {
+  return (
+    <span className={`inline-block w-11 shrink-0 rounded border px-1 py-0.5 text-center text-[10px] font-semibold ${CALL_STYLE[call]}`}>
+      {call === "na" ? "n/a" : call.toUpperCase()}
+    </span>
+  );
+}
 
 const CATEGORY_ORDER = [
   "Trend", "Momentum", "Volume", "Price levels", "Patterns", "Multi-timeframe", "Relative strength", "Mean reversion",
@@ -39,6 +56,12 @@ interface Props {
   onLabels: (v: boolean) => void;
   /** jump the chart to a signal */
   onFocus: (time: number | string) => void;
+  /** full analysis (all modules) for the "every analysis result" section */
+  analysis: FullAnalysis | null;
+  analysisLoading: boolean;
+  risk: RiskProfile;
+  tf: Timeframe;
+  ticker: string;
 }
 
 const pct = (v: number | null | undefined, digits = 1) =>
@@ -55,10 +78,11 @@ function fmtTime(t: number | string): string {
 
 export default function TaPanel({
   data, loading, error, enabled, onToggle, onSet, showSignals, onShowSignals, labels, onLabels, onFocus,
+  analysis, analysisLoading, risk, tf, ticker,
 }: Props) {
   const [tab, setTab] = useState<"rules" | "signals">("rules");
   const [sideFilter, setSideFilter] = useState<"all" | "buy" | "sell">("all");
-  const [onlyShown, setOnlyShown] = useState(true);
+  const [onlyShown, setOnlyShown] = useState(false);
   const ruleName = useMemo(() => new Map((data?.rules ?? []).map((r) => [r.id, r.name])), [data]);
   const signals = useMemo(() => {
     const evs = (data?.events ?? []).filter(
@@ -151,6 +175,11 @@ export default function TaPanel({
           sideFilter={sideFilter}
           setSideFilter={setSideFilter}
           onFocus={onFocus}
+          analysis={analysis}
+          analysisLoading={analysisLoading}
+          risk={risk}
+          tf={tf}
+          ticker={ticker}
         />
       )}
 
@@ -209,8 +238,133 @@ export default function TaPanel({
   );
 }
 
+function Section({ title, sub, children, defaultOpen = true }: {
+  title: string; sub?: string; children: React.ReactNode; defaultOpen?: boolean;
+}) {
+  return (
+    <details open={defaultOpen} className="border-b border-border">
+      <summary className="cursor-pointer select-none bg-panel/60 px-3 py-2 text-xs font-semibold text-gray-200 hover:text-white">
+        {title}
+        {sub && <span className="ml-2 font-normal text-gray-500">{sub}</span>}
+      </summary>
+      {children}
+    </details>
+  );
+}
+
+function NowRules({ data }: { data: TAData }) {
+  const rows = CATEGORY_ORDER.flatMap((cat) => data.rules.filter((r) => r.category === cat));
+  const n = { buy: 0, sell: 0, hold: 0 };
+  const call = (r: TARule): Call => (!r.available ? "na" : r.state > 0 ? "buy" : r.state < 0 ? "sell" : "hold");
+  rows.forEach((r) => { const c = call(r); if (c !== "na") n[c]++; });
+  return (
+    <Section title="Chart rules — right now" sub={`${n.buy} buy · ${n.sell} sell · ${n.hold} hold`}>
+      <ul className="divide-y divide-border/40">
+        {rows.map((r) => (
+          <li key={r.id} className="flex gap-2 px-3 py-1.5" title={r.description}>
+            <CallChip call={call(r)} />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 text-[11px]">
+                <span className="truncate text-gray-200">{r.name}</span>
+                {r.score !== 0 && (
+                  <span className={`ml-auto font-mono text-[10px] ${r.score > 0 ? "text-[#22c55e]" : "text-[#f97316]"}`}>
+                    {r.score > 0 ? "+" : ""}{r.score.toFixed(2)}
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] leading-4 text-gray-400">{r.status}</div>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="px-3 pb-2 text-[10px] text-gray-500">
+        BUY/SELL = the rule leans bullish/bearish on the latest bar; HOLD = no signal. Numbers are what each rule adds to the
+        technical score (rules leaning one way without a number are context, e.g. MACD above signal with no recent cross).
+      </p>
+    </Section>
+  );
+}
+
+function NowAnalysis({ analysis, loading, risk, tf, ticker }: {
+  analysis: FullAnalysis | null; loading: boolean; risk: RiskProfile; tf: Timeframe; ticker: string;
+}) {
+  if (!analysis) {
+    return (
+      <Section title="Full analysis — right now">
+        <p className="px-3 py-2 text-[11px] text-gray-500">{loading ? "Running all analysis modules…" : "Analysis unavailable."}</p>
+      </Section>
+    );
+  }
+  const cell = analysis.cells.find((c) => c.risk_profile === risk && c.timeframe === tf);
+  const counted = new Map((cell?.contributors ?? []).map((c) => [c.module, c]));
+  const weightSum = (cell?.contributors ?? []).reduce((a, c) => a + c.cell_w * c.horizon_w * c.confidence, 0);
+  const mods = GROUP_ORDER.flatMap((g) =>
+    Object.entries(analysis.modules).filter(([name]) => (MODULE_INFO[name]?.group ?? "Risk") === g),
+  );
+  const callOf = (m: (typeof analysis.modules)[string]): Call =>
+    m.score == null || m.data_quality === "missing" ? "na" : m.direction === "bullish" ? "buy" : m.direction === "bearish" ? "sell" : "hold";
+  const final: Call = !cell ? "na" : cell.direction === "buy" ? "buy" : cell.direction === "sell_short" ? "sell" : "hold";
+  return (
+    <Section title="Full analysis — right now" sub="technical + fundamentals + sentiment + macro + risk">
+      {cell && (
+        <div className="border-b border-border/60 px-3 py-2 text-[11px]">
+          <div className="flex items-center gap-2">
+            <CallChip call={final} />
+            <span className="text-gray-200">
+              Overall for <b>{PROFILE_LABEL[risk]} · {tf}</b>
+            </span>
+            <span className="ml-auto font-mono text-gray-300">
+              {cell.score >= 0 ? "+" : ""}{cell.score.toFixed(2)} · {(cell.confidence * 100).toFixed(0)}%
+            </span>
+          </div>
+          <p className="mt-1 leading-4 text-gray-400">
+            {!cell.filter_passed
+              ? `Excluded from this profile: ${cell.filter_reason}.`
+              : `Weighted blend of the modules below (change profile / horizon in the toolbar). BUY needs ≥ +${analysis.thresholds.direction.toFixed(2)}, SELL ≤ −${analysis.thresholds.direction.toFixed(2)}, otherwise HOLD (shown as AVOID elsewhere).`}
+          </p>
+        </div>
+      )}
+      <ul className="divide-y divide-border/40">
+        {mods.map(([name, m]) => {
+          const c = counted.get(name);
+          const points = c && weightSum ? c.weighted_contrib / weightSum : null;
+          const why = m.notes.length ? m.notes : [m.data_quality === "missing" ? "No data available." : "Nothing notable — neutral reading."];
+          return (
+            <li key={name} className="flex gap-2 px-3 py-1.5">
+              <CallChip call={callOf(m)} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline gap-2 text-[11px]">
+                  <span className="truncate text-gray-200">{MODULE_INFO[name]?.title ?? name}</span>
+                  <span className="text-[10px] text-gray-600">{MODULE_INFO[name]?.group}</span>
+                  <span
+                    className="ml-auto whitespace-nowrap font-mono text-[10px] text-gray-400"
+                    title="Module score · points it adds to the overall verdict for the selected profile and horizon"
+                  >
+                    {m.score != null ? `${m.score >= 0 ? "+" : ""}${m.score.toFixed(2)}` : "—"}
+                    {points != null ? (
+                      <span className={points >= 0 ? "text-[#22c55e]" : "text-[#f97316]"}> → {points >= 0 ? "+" : ""}{points.toFixed(3)}</span>
+                    ) : <span className="text-gray-600"> → not counted</span>}
+                  </span>
+                </div>
+                <ul className="text-[11px] leading-4 text-gray-400">
+                  {why.slice(0, 4).map((n, i) => <li key={i}>{n}</li>)}
+                </ul>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="px-3 pb-2 text-[10px] text-gray-500">
+        &quot;→&quot; = points added to the overall score above. Full numbers and explanations on the{" "}
+        <Link to={`/analysis/${encodeURIComponent(ticker)}`} className="text-accent hover:underline">Analysis page</Link>.
+      </p>
+    </Section>
+  );
+}
+
 function SignalsTab({
   data, signals, ruleName, enabled, onlyShown, setOnlyShown, sideFilter, setSideFilter, onFocus,
+  analysis, analysisLoading, risk, tf, ticker,
 }: {
   data: TAData;
   signals: TAEvent[];
@@ -221,11 +375,20 @@ function SignalsTab({
   sideFilter: "all" | "buy" | "sell";
   setSideFilter: (v: "all" | "buy" | "sell") => void;
   onFocus: (time: number | string) => void;
+  analysis: FullAnalysis | null;
+  analysisLoading: boolean;
+  risk: RiskProfile;
+  tf: Timeframe;
+  ticker: string;
 }) {
   const base = data.base_rate;
   const rules = data.rules.filter((r) => r.stats && (r.stats.buy.n + r.stats.sell.n) > 0 && (!onlyShown || enabled.has(r.id)));
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <NowRules data={data} />
+      <NowAnalysis analysis={analysis} loading={analysisLoading} risk={risk} tf={tf} ticker={ticker} />
+
+      <Section title="Signal history & track record" sub={`${data.events.length} past signals`} defaultOpen={false}>
       <div className="border-b border-border px-3 py-2 text-[10px] leading-4 text-gray-500">
         How each rule&apos;s signals played out on this chart. <b className="text-gray-400">+5 / +20</b> = price change 5 and 20
         bars after the signal. A buy &quot;worked&quot; if price rose, a sell if it fell. Compare with the base rate: a rule
@@ -233,7 +396,7 @@ function SignalsTab({
       </div>
 
       {/* track record per rule */}
-      <div className="max-h-[45%] overflow-y-auto border-b border-border px-3 py-2">
+      <div className="border-b border-border px-3 py-2">
         <table className="w-full text-[11px]">
           <thead>
             <tr className="text-[10px] text-gray-500">
@@ -307,14 +470,14 @@ function SignalsTab({
       </div>
 
       {/* every signal, newest first */}
-      <div className="flex-1 overflow-y-auto">
+      <div>
         {signals.length === 0 ? (
           <div className="p-3 text-xs text-gray-500">
             No signals. {onlyShown ? "Tick rules on the Rules tab, or untick “shown rules only”." : ""}
           </div>
         ) : (
           <table className="w-full text-[11px]">
-            <thead className="sticky top-0 bg-panel text-[10px] text-gray-500">
+            <thead className="bg-panel text-[10px] text-gray-500">
               <tr>
                 <th className="px-3 py-1 text-left font-normal">Date</th>
                 <th className="py-1 text-left font-normal">Signal</th>
@@ -352,6 +515,7 @@ function SignalsTab({
           </table>
         )}
       </div>
+      </Section>
     </div>
   );
 }

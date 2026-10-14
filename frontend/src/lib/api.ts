@@ -332,6 +332,54 @@ export interface FullAnalysis {
   cached: boolean;
 }
 
+// ---- similar-situation (analog) analysis — information only, not scored ----
+export interface AnalogStats {
+  n: number;
+  up?: number;
+  median?: number;
+  mean?: number;
+  p10?: number;
+  p90?: number;
+  best?: number;
+  worst?: number;
+}
+
+export interface AnalogMatch {
+  time: string;
+  close: number;
+  similarity: number;
+  distance: number;
+  ret_5: number | null;
+  ret_20: number | null;
+  ret_60: number | null;
+  dip_20?: number;
+  peak_20?: number;
+  features: Record<string, number | null>;
+}
+
+export interface AnalogView {
+  available: true;
+  source: { symbol: string; name: string; is_proxy: boolean };
+  today: Record<string, number | null>;
+  matches: AnalogMatch[];
+  paths: { time: string; values: number[] }[];
+  summary: Record<"5" | "20" | "60", { analogs: AnalogStats; base: AnalogStats }> & { dip_20: AnalogStats };
+  verdict: { tone: "better" | "worse" | "similar" | "inconclusive"; text: string };
+  history_bars: number;
+  history_from: string;
+  params: { k: number; min_gap: number; horizons: number[] };
+}
+
+export interface AnalogResponse {
+  available: boolean;
+  reason?: string;
+  primary?: "own" | "proxy";
+  views?: Partial<Record<"own" | "proxy", AnalogView>>;
+  today?: Record<string, number | null>;
+  features?: { key: string; label: string; weight: number; fmt: string }[];
+  own_bars?: number;
+}
+
 export interface LogLine {
   id: number;
   ts: string;
@@ -418,6 +466,7 @@ export const api = {
       request<ChartData>(`/api/chart/bars/${encodeURIComponent(ticker)}${qs({ interval })}`),
     symbols: () => request<SymbolHit[]>("/api/chart/symbols"),
     search: (q: string) => request<SymbolHit[]>(`/api/chart/search${qs({ q })}`),
+    analogs: (ticker: string) => request<AnalogResponse>(`/api/chart/analogs/${encodeURIComponent(ticker)}`),
     ta: (ticker: string, interval: ChartInterval) =>
       request<TAData>(`/api/chart/ta/${encodeURIComponent(ticker)}${qs({ interval })}`),
   },

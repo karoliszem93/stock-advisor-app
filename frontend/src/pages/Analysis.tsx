@@ -13,6 +13,7 @@ import {
 import DirectionBadge from "../components/DirectionBadge";
 import SymbolSearch from "../components/chart/SymbolSearch";
 import { GROUP_ORDER, MODULE_INFO, PROFILE_LABEL } from "../lib/moduleInfo";
+import SimilarSituations from "../components/SimilarSituations";
 
 const sign = (v: number, d = 2) => `${v >= 0 ? "+" : ""}${v.toFixed(d)}`;
 const scoreColor = (v: number | null | undefined) =>
@@ -132,6 +133,10 @@ export default function Analysis() {
           <VerdictMatrix data={data} risk={risk} tf={tf} onSelect={(r, t) => { setRisk(r); setTf(t); }} />
           {cell && <CellBreakdown data={data} cell={cell} />}
           <ModuleSections data={data} />
+          <section className="rounded border border-border bg-panel/30 p-4">
+            <h3 className="mb-2 text-sm font-semibold">Similar situations in {ticker}&apos;s history</h3>
+            <div className="max-w-2xl"><SimilarSituations ticker={ticker} /></div>
+          </section>
           {Object.keys(data.data_errors).length > 0 && (
             <details className="rounded border border-border bg-panel/30 p-3 text-xs text-gray-400">
               <summary className="cursor-pointer text-gray-300">Data issues ({Object.keys(data.data_errors).length})</summary>

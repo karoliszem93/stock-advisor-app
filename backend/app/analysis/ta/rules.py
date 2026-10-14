@@ -71,7 +71,7 @@ def build_frame(bars: list[dict], time_key: str = "date") -> pd.DataFrame:
     return df
 
 
-class _Calc:
+class Calc:
     """Indicators computed once and shared by all rules."""
 
     def __init__(self, df: pd.DataFrame):
@@ -142,7 +142,7 @@ def _ago(i: int, last_i: int) -> str:
 # ---------------------------------------------------------------------------
 # rules
 # ---------------------------------------------------------------------------
-def rule_trend_ema200(c: _Calc) -> RuleOutput:
+def rule_trend_ema200(c: Calc) -> RuleOutput:
     r = RuleOutput("trend_ema200", "Trend: price vs 200-EMA", "Trend", "technical",
                    "Above the 200-period EMA = long-term uptrend. Score scales with the distance "
                    "(±0.30 max). Signals mark crosses of the EMA.")
@@ -161,7 +161,7 @@ def rule_trend_ema200(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_rsi(c: _Calc) -> RuleOutput:
+def rule_rsi(c: Calc) -> RuleOutput:
     r = RuleOutput("rsi", "RSI (14) zones", "Momentum", "technical",
                    "Buy: RSI 30–45 in an uptrend (pullback, +0.20) or below 30 (oversold, +0.15). "
                    "Sell: RSI 55–70 in a downtrend (bounce, −0.20) or above 75 (overbought, −0.15). "
@@ -194,7 +194,7 @@ def rule_rsi(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_macd(c: _Calc) -> RuleOutput:
+def rule_macd(c: Calc) -> RuleOutput:
     r = RuleOutput("macd", "MACD (12, 26, 9) crossover", "Momentum", "technical",
                    "MACD line crossing above its signal line = bullish, below = bearish. "
                    f"Scores ±0.20 while the cross is within the last {RECENT_BARS} bars.")
@@ -222,7 +222,7 @@ def rule_macd(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_adx(c: _Calc) -> RuleOutput:
+def rule_adx(c: Calc) -> RuleOutput:
     r = RuleOutput("adx", "ADX (14) trend strength", "Trend", "technical",
                    "ADX > 25 = strong trend: all technical signals ×1.15; ADX < 15 = no trend: ×0.85. "
                    f"Signals: +DI/−DI crosses while ADX > 20 (±0.10 within {RECENT_BARS} bars).")
@@ -254,7 +254,7 @@ def rule_adx(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_breakout(c: _Calc) -> RuleOutput:
+def rule_breakout(c: Calc) -> RuleOutput:
     r = RuleOutput("breakout", "Breakout with volume", "Volume", "technical",
                    "Close above the prior 20-bar high (below the 20-bar low) on volume ≥ 1.5× the 20-bar "
                    f"average. Unconfirmed (low-volume) breakouts are ignored. ±0.20 within {RECENT_BARS} bars.")
@@ -283,7 +283,7 @@ def rule_breakout(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_obv(c: _Calc) -> RuleOutput:
+def rule_obv(c: Calc) -> RuleOutput:
     r = RuleOutput("obv", "On-balance volume", "Volume", "technical",
                    "Divergence: price at a 20-bar low while OBV is not (accumulation, buy) or price at a 20-bar "
                    "high while OBV is not (distribution, sell), ±0.15 within 5 bars. OBV trend agreeing with "
@@ -318,7 +318,7 @@ def rule_obv(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_unusual_volume(c: _Calc) -> RuleOutput:
+def rule_unusual_volume(c: Calc) -> RuleOutput:
     r = RuleOutput("unusual_volume", "Unusual volume", "Volume", "technical",
                    "Volume ≥ 2.5× its 20-bar average. Up-candle = buying pressure, down-candle = selling. "
                    "±0.05 within 3 bars.")
@@ -368,7 +368,7 @@ def _cluster_levels(prices: list[float], tol: float) -> list[tuple[float, int]]:
     return [(float(np.mean(g)), len(g)) for g in groups]
 
 
-def _levels_at(c: _Calc, i: int) -> tuple[list[tuple[float, int]], list[tuple[float, int]]]:
+def _levels_at(c: Calc, i: int) -> tuple[list[tuple[float, int]], list[tuple[float, int]]]:
     """Support / resistance as known at bar i (pivots confirmed by then, last SR_LOOKBACK bars)."""
     atr = c.atr_np[i]
     if not np.isfinite(atr) or atr <= 0:
@@ -384,7 +384,7 @@ def _levels_at(c: _Calc, i: int) -> tuple[list[tuple[float, int]], list[tuple[fl
     return support, resistance
 
 
-def rule_support_resistance(c: _Calc) -> RuleOutput:
+def rule_support_resistance(c: Calc) -> RuleOutput:
     r = RuleOutput("support_resistance", "Support & resistance", "Price levels", "technical",
                    f"Levels from swing highs/lows of the last {SR_LOOKBACK} bars (nearby swings merged; "
                    "touches = strength). Buy: bullish bounce off support; sell: rejection at resistance "
@@ -438,7 +438,7 @@ def rule_support_resistance(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_candles(c: _Calc) -> RuleOutput:
+def rule_candles(c: Calc) -> RuleOutput:
     r = RuleOutput("candles", "Candlestick patterns", "Patterns", "technical",
                    "After a decline: bullish engulfing, morning star (+0.10), hammer (+0.07). After an advance: "
                    "bearish engulfing, evening star (−0.10), shooting star (−0.07). Counted within 2 bars; "
@@ -492,7 +492,7 @@ def rule_candles(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_chart_patterns(c: _Calc) -> RuleOutput:
+def rule_chart_patterns(c: Calc) -> RuleOutput:
     r = RuleOutput("chart_patterns", "Chart patterns", "Patterns", "technical",
                    "Double bottom / top (two swings within 0.6 ATR, 10–60 bars apart, confirmed on a close "
                    "through the neckline) and bull / bear flags (≥4 ATR pole within 10 bars, tight ≤50% "
@@ -581,7 +581,7 @@ def rule_chart_patterns(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_htf_trend(c: _Calc, htf_rule: str | None, htf_label: str) -> RuleOutput:
+def rule_htf_trend(c: Calc, htf_rule: str | None, htf_label: str) -> RuleOutput:
     r = RuleOutput("htf_trend", f"{htf_label} trend", "Multi-timeframe", "technical",
                    f"{htf_label} close vs its EMA and {htf_label.lower()} MACD histogram: both up = bullish (+0.10), "
                    f"both down = bearish (−0.10). Daily signals that fight the {htf_label.lower()} trend are "
@@ -619,7 +619,7 @@ def rule_htf_trend(c: _Calc, htf_rule: str | None, htf_label: str) -> RuleOutput
     return r
 
 
-def rule_relative_strength(c: _Calc, benchmark: pd.Series | None, name: str | None) -> RuleOutput:
+def rule_relative_strength(c: Calc, benchmark: pd.Series | None, name: str | None) -> RuleOutput:
     label = name or "benchmark"
     r = RuleOutput("relative_strength", f"Relative strength vs {label}", "Relative strength", "momentum",
                    f"Price ÷ {label}, rebased to 100. Above its 50-bar average = outperforming. Signals mark "
@@ -645,7 +645,7 @@ def rule_relative_strength(c: _Calc, benchmark: pd.Series | None, name: str | No
     return r
 
 
-def rule_bollinger(c: _Calc) -> RuleOutput:
+def rule_bollinger(c: Calc) -> RuleOutput:
     r = RuleOutput("bollinger", "Bollinger Bands (20, 2)", "Mean reversion", "mean_reversion",
                    "%B below 0.10 (at the lower band) = stretched down, +0.15; above 0.90 = stretched up, −0.15. "
                    "Signals: price closing back inside the bands.")
@@ -668,7 +668,7 @@ def rule_bollinger(c: _Calc) -> RuleOutput:
     return r
 
 
-def rule_zscore(c: _Calc) -> RuleOutput:
+def rule_zscore(c: Calc) -> RuleOutput:
     r = RuleOutput("zscore", "Z-score stretch", "Mean reversion", "mean_reversion",
                    "Distance from the 20- and 50-bar mean in standard deviations: stretched up is bearish, "
                    "stretched down bullish (−0.20×z20, −0.10×z50). More than 5 ATR from the 200-EMA ±0.10. "
@@ -714,7 +714,7 @@ def evaluate(
     htf_label: str = "Weekly",
 ) -> dict[str, RuleOutput]:
     """Run every rule on `df` (from build_frame). `benchmark` is a close series aligned to df's index."""
-    c = _Calc(df)
+    c = Calc(df)
     outs = [
         rule_trend_ema200(c), rule_rsi(c), rule_macd(c), rule_adx(c), rule_breakout(c), rule_obv(c),
         rule_unusual_volume(c), rule_support_resistance(c), rule_candles(c), rule_chart_patterns(c),

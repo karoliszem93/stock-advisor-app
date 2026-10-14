@@ -44,7 +44,7 @@ class MeanReversionModule(BaseAnalysisModule):
             return r
 
         df = ta.build_frame(bars, "date")
-        c = ta._Calc(df)
+        c = ta.Calc(df)
         z, bb = ta.rule_zscore(c), ta.rule_bollinger(c)
         agg = ta.aggregate_mean_reversion({"zscore": z, "bollinger": bb})
         score = clamp(agg["score"])

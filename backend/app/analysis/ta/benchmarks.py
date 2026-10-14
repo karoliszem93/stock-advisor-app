@@ -55,3 +55,33 @@ def benchmark_for(
     if country == "Japan":
         return JAPAN
     return US if "." not in ticker else WORLD
+
+
+# Longer-history stand-ins for analog analysis: same exposure, decades of data.
+_ANALOG_PROXY: dict[str, tuple[str, str]] = {
+    "us_large_cap": ("^GSPC", "S&P 500 index"),
+    "us_tech": ("^NDX", "Nasdaq-100 index"),
+    "global_developed_em": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "global_developed": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "global_dividend": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "factor_quality": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "factor_value": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "factor_momentum": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "factor_low_vol": ("ACWI", "MSCI ACWI (iShares, US-listed)"),
+    "europe_developed": ("^STOXX", "STOXX Europe 600 index"),
+    "emerging_markets": ("EEM", "MSCI Emerging Markets (iShares, US-listed)"),
+    "japan": ("^N225", "Nikkei 225 index"),
+    "us_sector_tech": ("XLK", "US tech sector (XLK)"),
+    "us_sector_financials": ("XLF", "US financials sector (XLF)"),
+    "us_sector_health": ("XLV", "US health-care sector (XLV)"),
+    "us_sector_energy": ("XLE", "US energy sector (XLE)"),
+    "us_sector_staples": ("XLP", "US consumer staples sector (XLP)"),
+    "us_sector_discretionary": ("XLY", "US consumer discretionary sector (XLY)"),
+    "commodities_gold": ("GC=F", "Gold futures"),
+    "bonds_us_treasury": ("IEF", "US 7–10y Treasuries (IEF)"),
+    "thematic_clean_energy": ("ICLN", "Global clean energy (ICLN)"),
+}
+
+
+def analog_proxy_for(category: str | None) -> tuple[str, str] | None:
+    return _ANALOG_PROXY.get(category or "")

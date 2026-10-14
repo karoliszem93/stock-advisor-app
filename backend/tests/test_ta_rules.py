@@ -161,3 +161,41 @@ def test_signal_track_record_uses_forward_prices():
     if buys:
         assert macd["stats"]["buy"]["win_20"] == pytest.approx(sum(e["ret_20"] > 0 for e in buys) / len(buys))
     assert 0 <= out["base_rate"]["up_20"] <= 1
+
+
+# ---------------------------------------------------------------------------
+# similar-situation (analog) analysis
+# ---------------------------------------------------------------------------
+from app.analysis.ta import analogs  # noqa: E402
+
+
+def test_fingerprints_have_no_lookahead():
+    bars = _wavy(900)
+    full = analogs.fingerprints(ta.build_frame(bars, "date"))
+    part = analogs.fingerprints(ta.build_frame(bars[:700], "date"))
+    pd.testing.assert_frame_equal(part.iloc[:700], full.iloc[:700], check_exact=False, rtol=1e-9)
+
+
+def test_analogs_outcomes_gap_and_exclusion():
+    bars = _wavy(1500, seed=3)
+    df = ta.build_frame(bars, "date")
+    out = analogs.find_analogs(df, k=15)
+    assert out["available"]
+    closes = df["close"].to_numpy(float)
+    pos = {t: i for i, t in enumerate(df["time"])}
+    picked = sorted(pos[m["time"]] for m in out["matches"])
+    assert all(b - a >= analogs.MIN_GAP for a, b in zip(picked, picked[1:], strict=False))
+    assert max(picked) < len(df) - 1 - analogs.EXCLUDE_RECENT
+    for m in out["matches"]:
+        i = pos[m["time"]]
+        if m["ret_20"] is not None:
+            assert m["ret_20"] == pytest.approx(closes[i + 20] / closes[i] - 1)
+    s = out["summary"]["20"]["analogs"]
+    assert s["n"] == sum(m["ret_20"] is not None for m in out["matches"])
+
+
+def test_analogs_accept_external_fingerprint():
+    df = ta.build_frame(_wavy(1500, seed=4), "date")
+    today = analogs.today_fingerprint(ta.build_frame(_wavy(900, seed=5), "date"))
+    out = analogs.find_analogs(df, k=10, today=today)
+    assert out["available"] and out["today"]["rsi"] == pytest.approx(today["rsi"])

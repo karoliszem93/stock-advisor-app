@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.ta import rules as ta
-from app.analysis.ta.benchmarks import benchmark_for
+from app.analysis.ta import analogs
+from app.analysis.ta.benchmarks import analog_proxy_for, benchmark_for
 from app.db import get_db
 from app.models import WatchlistItem
 from app.providers.registry import get_provider
@@ -120,3 +121,58 @@ def chart_ta(ticker: str, interval: str = Query(default="1d")) -> dict:
         "bars_evaluated": len(df),
     }
     return out
+
+
+# own history shorter than this (~10 years) -> use the long-history proxy by default
+_ANALOG_MIN_OWN_BARS = 2500
+
+
+@router.get("/analogs/{ticker}")
+def chart_analogs(
+    ticker: str,
+    source: str = Query(default="auto", pattern="^(auto|own|proxy)$"),
+    k: int = Query(default=analogs.DEFAULT_K, ge=5, le=50),
+) -> dict:
+    """Past situations most similar to today's (daily bars) and what followed.
+    Information only — not used in any score."""
+    yf = get_provider("yfinance")
+    sym = ticker.strip().upper()
+    try:
+        own = yf.get_chart_bars(sym, "1d")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"price data unavailable: {redact_exc(exc, 200)}") from exc
+    if not own or not own.get("bars"):
+        raise HTTPException(404, f"no price data for {sym}")
+
+    proxy = analog_proxy_for(_curated().get(sym, {}).get("category"))
+    own_df = ta.build_frame(own["bars"], "time")
+    today = analogs.today_fingerprint(own_df)
+    if today is None:
+        return {"available": False, "reason": "Not enough history to describe today's situation (needs ~2 years)."}
+
+    views: dict[str, dict] = {}
+    own_res = analogs.find_analogs(own_df, k=k)
+    if own_res.get("available"):
+        views["own"] = {**own_res, "source": {"symbol": sym, "name": "own history", "is_proxy": False}}
+    if proxy:
+        try:
+            pdata = yf.get_chart_bars(proxy[0], "1d")
+            if pdata and pdata.get("bars"):
+                res = analogs.find_analogs(ta.build_frame(pdata["bars"], "time"), k=k, today=today)
+                if res.get("available"):
+                    views["proxy"] = {**res, "source": {"symbol": proxy[0], "name": proxy[1], "is_proxy": True}}
+        except Exception:  # noqa: BLE001 — own history still shown
+            pass
+    if not views:
+        return {"available": False, "reason": "Not enough history to search for similar situations."}
+
+    default = "proxy" if "proxy" in views and (len(own["bars"]) < _ANALOG_MIN_OWN_BARS or "own" not in views) else "own"
+    primary = source if source in views else default
+    return {
+        "available": True,
+        "primary": primary,
+        "views": views,
+        "today": views[primary]["today"],
+        "features": views[primary]["features"],
+        "own_bars": len(own["bars"]),
+    }

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import type { FullAnalysis, RiskProfile, TAData, TAEvent, TARule, Timeframe } from "../../lib/api";
 import { GROUP_ORDER, MODULE_INFO, PROFILE_LABEL } from "../../lib/moduleInfo";
+import SimilarSituations from "../SimilarSituations";
 
 type Call = "buy" | "sell" | "hold" | "na";
 const CALL_STYLE: Record<Call, string> = {
@@ -80,7 +81,7 @@ export default function TaPanel({
   data, loading, error, enabled, onToggle, onSet, showSignals, onShowSignals, labels, onLabels, onFocus,
   analysis, analysisLoading, risk, tf, ticker,
 }: Props) {
-  const [tab, setTab] = useState<"rules" | "signals">("rules");
+  const [tab, setTab] = useState<"rules" | "signals" | "similar">("rules");
   const [sideFilter, setSideFilter] = useState<"all" | "buy" | "sell">("all");
   const [onlyShown, setOnlyShown] = useState(false);
   const ruleName = useMemo(() => new Map((data?.rules ?? []).map((r) => [r.id, r.name])), [data]);
@@ -153,16 +154,22 @@ export default function TaPanel({
       </div>
 
       <div className="flex border-b border-border text-xs">
-        {(["rules", "signals"] as const).map((k) => (
+        {(["rules", "signals", "similar"] as const).map((k) => (
           <button
             key={k}
             onClick={() => setTab(k)}
             className={`flex-1 py-1.5 ${tab === k ? "border-b-2 border-accent text-accent" : "text-gray-400 hover:text-gray-200"}`}
           >
-            {k === "rules" ? "Rules" : `Signals${data ? ` (${data.events.length})` : ""}`}
+            {k === "rules" ? "Rules" : k === "similar" ? "Similar" : `Signals${data ? ` (${data.events.length})` : ""}`}
           </button>
         ))}
       </div>
+
+      {tab === "similar" && (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <SimilarSituations ticker={ticker} onFocus={(t) => onFocus(t)} compact />
+        </div>
+      )}
 
       {tab === "signals" && data && (
         <SignalsTab
